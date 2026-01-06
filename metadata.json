@@ -1,0 +1,5 @@
+{
+  "name": "Gemini 逐字稿大師",
+  "description": "專業級 AI 語音轉文字工具，支援長音檔分割、多人辨識與時間軸標記，採用 Gemini 3 Flash 模型。",
+  "requestFramePermissions": []
+}
