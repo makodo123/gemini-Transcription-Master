@@ -10,12 +10,47 @@ interface GeminiResponseItem {
   text: string;
 }
 
+interface TranscribeOptions {
+  maxRetries?: number;
+  retryDelay?: number;
+}
+
+/**
+ * 带重试机制的转录函数
+ */
+const transcribeWithRetry = async (
+  fn: () => Promise<TranscriptSegment[]>,
+  chunkIndex: number,
+  options: TranscribeOptions = {}
+): Promise<TranscriptSegment[]> => {
+  const { maxRetries = 3, retryDelay = 1000 } = options;
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error as Error;
+      
+      if (attempt < maxRetries) {
+        console.log(`Retry ${attempt + 1}/${maxRetries} for chunk ${chunkIndex + 1}`);
+        // 指数退避策略
+        await new Promise(resolve => setTimeout(resolve, retryDelay * Math.pow(2, attempt)));
+      }
+    }
+  }
+
+  throw lastError || new Error('Transcription failed after retries');
+};
+
 export const transcribeChunk = async (
   audioBlob: Blob, 
   apiKey: string,
   chunkIndex: number,
-  startTimeOffset: number
+  startTimeOffset: number,
+  options?: TranscribeOptions
 ): Promise<TranscriptSegment[]> => {
+  return transcribeWithRetry(async () => {
   try {
     const ai = new GoogleGenAI({ apiKey });
     const base64Audio = await blobToBase64(audioBlob);
@@ -93,4 +128,5 @@ export const transcribeChunk = async (
     console.error(`Error transcribing chunk ${chunkIndex}:`, error);
     throw error;
   }
+  }, chunkIndex, options);
 };

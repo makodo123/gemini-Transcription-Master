@@ -1,10 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, Clock, User, FileOutput, FileDown } from 'lucide-react';
+import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, Clock, User, FileOutput, FileDown, RefreshCw } from 'lucide-react';
 import { decodeAudio, splitAudioBuffer, audioBufferToWav, formatTime, generateSrtContent, parseTimeStringToSeconds } from './utils/audioUtils';
 import { transcribeChunk, MODEL_NAME } from './services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
 import QuotaDisplay from './components/QuotaDisplay';
+import { saveProgress, loadProgress, clearProgress } from './utils/progressStorage';
+import { parseGeminiError, parseAudioError } from './utils/errorHandling';
 
 // Chunk duration in seconds. 
 // Gemini 3 Flash has large context, but splitting helps with progress updates and stability.
@@ -70,8 +72,29 @@ function App() {
     
     abortControllerRef.current = false;
     setStatus(AppStatus.PREPARING);
-    setTranscripts([]);
     setErrorMsg(null);
+    
+    // 检查是否有保存的进度
+    const savedProgress = loadProgress(file.name, file.size);
+    if (savedProgress && savedProgress.transcripts.length > 0) {
+      const shouldResume = window.confirm(
+        `找到未完成的轉錄進度 (${savedProgress.processedChunks}/${savedProgress.totalChunks} 個片段已完成)。是否要繼續？`
+      );
+      
+      if (shouldResume) {
+        setTranscripts(savedProgress.transcripts);
+        setStats({
+          totalChunks: savedProgress.totalChunks,
+          processedChunks: savedProgress.processedChunks,
+          currentAction: '從上次進度繼續...'
+        });
+      } else {
+        clearProgress();
+        setTranscripts([]);
+      }
+    } else {
+      setTranscripts([]);
+    }
     
     try {
       // 1. Decode
@@ -85,13 +108,20 @@ function App() {
       const chunks = splitAudioBuffer(audioBuffer, CHUNK_DURATION);
       const totalChunks = chunks.length;
       
-      setStats({ totalChunks, processedChunks: 0, currentAction: '準備開始轉錄...' });
+      // 确定起始位置
+      const startChunk = savedProgress && savedProgress.transcripts.length > 0 
+        ? savedProgress.processedChunks 
+        : 0;
+      
+      setStats({ totalChunks, processedChunks: startChunk, currentAction: '準備開始轉錄...' });
       setStatus(AppStatus.PROCESSING);
 
       // 3. Process loop
-      for (let i = 0; i < totalChunks; i++) {
+      for (let i = startChunk; i < totalChunks; i++) {
         if (abortControllerRef.current) {
           setStatus(AppStatus.STOPPED);
+          // 保存当前进度
+          saveProgress(file.name, file.size, transcripts, i, totalChunks);
           break;
         }
 
@@ -108,17 +138,29 @@ function App() {
         setQuota(prev => Math.max(0, prev - (2 + Math.random() * 2)));
 
         try {
-          const newSegments = await transcribeChunk(chunkBlob, apiKey, i, startTimeOffset);
-          setTranscripts(prev => [...prev, ...newSegments]);
+          // 使用带重试的转录函数
+          const newSegments = await transcribeChunk(chunkBlob, apiKey, i, startTimeOffset, { maxRetries: 3 });
+          setTranscripts(prev => {
+            const updated = [...prev, ...newSegments];
+            // 每处理一个块就保存进度
+            saveProgress(file.name, file.size, updated, i + 1, totalChunks);
+            return updated;
+          });
         } catch (err) {
           console.error(err);
-          // If one chunk fails, we might want to continue or stop. 
-          // For now, we append an error marker segment but continue.
+          const appError = parseGeminiError(err);
+          
+          // 如果错误可重试，则记录但继续；否则显示错误消息
+          if (!appError.retryable) {
+            setErrorMsg(appError.userMessage);
+          }
+          
+          // 添加错误标记到转录结果
           setTranscripts(prev => [...prev, {
             speaker: 'System',
             timestamp: 'Error',
             startTimeSeconds: startTimeOffset,
-            text: `[轉錄此片段時發生錯誤: ${i + 1}]`
+            text: `[轉錄此片段時發生錯誤 (${i + 1}): ${appError.userMessage}]`
           }]);
         }
       }
@@ -126,11 +168,14 @@ function App() {
       if (!abortControllerRef.current) {
         setStatus(AppStatus.COMPLETED);
         setStats(prev => ({ ...prev, currentAction: '完成！' }));
+        // 完成后清除保存的进度
+        clearProgress();
       }
 
     } catch (err: any) {
       console.error("Processing error:", err);
-      setErrorMsg(err.message || "處理音訊時發生未知錯誤");
+      const appError = err.name === 'AppError' ? err : parseAudioError(err);
+      setErrorMsg(appError.userMessage);
       setStatus(AppStatus.ERROR);
     }
   };

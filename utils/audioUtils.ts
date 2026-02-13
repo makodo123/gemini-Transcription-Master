@@ -1,12 +1,22 @@
 import { TranscriptSegment } from "../types";
 
+// 创建单例 AudioContext 以避免重复创建（性能优化）
+let audioContext: AudioContext | null = null;
+
+const getAudioContext = (): AudioContext => {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  return audioContext;
+};
+
 /**
  * Decodes an audio file into an AudioBuffer.
  */
 export const decodeAudio = async (file: File): Promise<AudioBuffer> => {
   const arrayBuffer = await file.arrayBuffer();
-  const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-  return await audioContext.decodeAudioData(arrayBuffer);
+  const ctx = getAudioContext();
+  return await ctx.decodeAudioData(arrayBuffer);
 };
 
 /**
@@ -19,11 +29,12 @@ export const splitAudioBuffer = (audioBuffer: AudioBuffer, chunkDurationSeconds:
   const chunkLengthFrames = chunkDurationSeconds * sampleRate;
   
   const chunks: AudioBuffer[] = [];
+  const ctx = getAudioContext();
   
   for (let startFrame = 0; startFrame < audioBuffer.length; startFrame += chunkLengthFrames) {
     const endFrame = Math.min(startFrame + chunkLengthFrames, audioBuffer.length);
     const frameCount = endFrame - startFrame;
-    const chunkBuffer = new AudioContext().createBuffer(channels, frameCount, sampleRate);
+    const chunkBuffer = ctx.createBuffer(channels, frameCount, sampleRate);
     
     for (let channel = 0; channel < channels; channel++) {
       const channelData = audioBuffer.getChannelData(channel);
