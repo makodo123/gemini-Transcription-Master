@@ -34,8 +34,6 @@ function App() {
     const storedKey = localStorage.getItem('gemini_api_key');
     if (storedKey) {
       setApiKey(storedKey);
-    } else if (process.env.API_KEY) {
-      setApiKey(process.env.API_KEY);
     }
   }, []);
 
