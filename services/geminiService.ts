@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import { TranscriptSegment } from "../types";
 import { blobToBase64 } from "../utils/audioUtils";
 
@@ -81,6 +81,8 @@ export const transcribeChunk = async (
         ]
       },
       config: {
+        // 逐字稿是聽寫任務，不需要長時間推理；調低思考等級可明顯縮短每段的等待時間
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.ARRAY,

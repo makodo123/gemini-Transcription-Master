@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, Clock, User, FileOutput, FileDown, RefreshCw } from 'lucide-react';
-import { decodeAudio, splitAudioBuffer, audioBufferToWav, formatTime, generateSrtContent, parseTimeStringToSeconds } from './utils/audioUtils';
+import { decodeAudio, getChunkCount, extractChunk, audioBufferToWav, formatTime, generateSrtContent, parseTimeStringToSeconds } from './utils/audioUtils';
 import { transcribeChunk, MODEL_NAME } from './services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
@@ -11,7 +11,11 @@ import { parseGeminiError, parseAudioError } from './utils/errorHandling';
 // Chunk duration in seconds. 
 // Gemini 3 Flash has large context, but splitting helps with progress updates and stability.
 // 5 minutes is a safe balance.
-const CHUNK_DURATION = 300; 
+const CHUNK_DURATION = 300;
+
+// 同時送出的片段數。片段彼此獨立，並行可大幅縮短長音檔的總時間；
+// 設 3 以免免費方案的每分鐘請求上限（RPM）被打滿。
+const CONCURRENCY = 3;
 
 function App() {
   // State
@@ -27,6 +31,8 @@ function App() {
 
   // Refs
   const abortControllerRef = useRef<boolean>(false);
+  // 轉錄完成後設為 true，避免延後執行的 state 更新又把進度寫回 localStorage
+  const progressClosedRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load API Key from local storage or environment
@@ -69,11 +75,12 @@ function App() {
     if (!file || !apiKey) return;
     
     abortControllerRef.current = false;
+    progressClosedRef.current = false;
     setStatus(AppStatus.PREPARING);
     setErrorMsg(null);
     
     // 检查是否有保存的进度
-    const savedProgress = loadProgress(file.name, file.size);
+    let savedProgress = loadProgress(file.name, file.size);
     if (savedProgress && savedProgress.transcripts.length > 0) {
       const shouldResume = window.confirm(
         `找到未完成的轉錄進度 (${savedProgress.processedChunks}/${savedProgress.totalChunks} 個片段已完成)。是否要繼續？`
@@ -88,6 +95,7 @@ function App() {
         });
       } else {
         clearProgress();
+        savedProgress = null;
         setTranscripts([]);
       }
     } else {
@@ -101,72 +109,91 @@ function App() {
       
       if (abortControllerRef.current) return;
 
-      // 2. Split
-      setStats(prev => ({ ...prev, currentAction: '正在分割音訊...' }));
-      const chunks = splitAudioBuffer(audioBuffer, CHUNK_DURATION);
-      const totalChunks = chunks.length;
-      
-      // 确定起始位置
-      const startChunk = savedProgress && savedProgress.transcripts.length > 0 
-        ? savedProgress.processedChunks 
-        : 0;
-      
-      setStats({ totalChunks, processedChunks: startChunk, currentAction: '準備開始轉錄...' });
+      // 2. Plan chunks (each chunk is cut and resampled only when it is sent)
+      const totalChunks = getChunkCount(audioBuffer, CHUNK_DURATION);
+      const resuming = !!(savedProgress && savedProgress.transcripts.length > 0 && savedProgress.totalChunks === totalChunks);
+      const completed = new Set<number>(resuming ? savedProgress!.completedChunks : []);
+      if (!resuming) setTranscripts([]);
+      const queue = Array.from({ length: totalChunks }, (_, i) => i).filter(i => !completed.has(i));
+      let inFlight = 0;
+
+      const updateStats = () => setStats({
+        totalChunks,
+        processedChunks: completed.size,
+        currentAction: `正在同時轉錄 ${inFlight} 個片段（已完成 ${completed.size} / ${totalChunks}）...`
+      });
+
+      setStats({ totalChunks, processedChunks: completed.size, currentAction: '準備開始轉錄...' });
       setStatus(AppStatus.PROCESSING);
 
-      // 3. Process loop
-      for (let i = startChunk; i < totalChunks; i++) {
-        if (abortControllerRef.current) {
-          setStatus(AppStatus.STOPPED);
-          // 保存当前进度
-          saveProgress(file.name, file.size, transcripts, i, totalChunks);
-          break;
-        }
-
-        setStats({ 
-          totalChunks, 
-          processedChunks: i + 1, 
-          currentAction: `正在轉錄第 ${i + 1} / ${totalChunks} 個片段...` 
-        });
-
-        const chunkBlob = audioBufferToWav(chunks[i]);
-        const startTimeOffset = i * CHUNK_DURATION;
-
-        // Decrease quota simulation
-        setQuota(prev => Math.max(0, prev - (2 + Math.random() * 2)));
-
-        try {
-          // 使用带重试的转录函数
-          const newSegments = await transcribeChunk(chunkBlob, apiKey, i, startTimeOffset, { maxRetries: 3 });
-          setTranscripts(prev => {
-            const updated = [...prev, ...newSegments];
-            // 每处理一个块就保存进度
-            saveProgress(file.name, file.size, updated, i + 1, totalChunks);
-            return updated;
-          });
-        } catch (err) {
-          console.error(err);
-          const appError = parseGeminiError(err);
-          
-          // 如果错误可重试，则记录但继续；否则显示错误消息
-          if (!appError.retryable) {
-            setErrorMsg(appError.userMessage);
+      // 3. Process chunks with a small worker pool
+      const addSegments = (segments: TranscriptSegment[], chunkIndex: number) => {
+        completed.add(chunkIndex);
+        const completedList = [...completed];
+        setTranscripts(prev => {
+          // 片段完成順序不固定，依時間排序後再顯示（sort 為穩定排序，同段內順序不變）；
+          // 以 prev 為基礎，保留使用者在轉錄途中做的編輯
+          const updated = [...prev, ...segments].sort((a, b) => a.startTimeSeconds - b.startTimeSeconds);
+          if (!progressClosedRef.current) {
+            saveProgress(file.name, file.size, updated, completedList, totalChunks);
           }
-          
-          // 添加错误标记到转录结果
-          setTranscripts(prev => [...prev, {
-            speaker: 'System',
-            timestamp: 'Error',
-            startTimeSeconds: startTimeOffset,
-            text: `[轉錄此片段時發生錯誤 (${i + 1}): ${appError.userMessage}]`
-          }]);
+          return updated;
+        });
+        updateStats();
+      };
+
+      const worker = async () => {
+        while (!abortControllerRef.current) {
+          const i = queue.shift();
+          if (i === undefined) return;
+
+          inFlight++;
+          updateStats();
+          const startTimeOffset = i * CHUNK_DURATION;
+
+          // Decrease quota simulation
+          setQuota(prev => Math.max(0, prev - (2 + Math.random() * 2)));
+
+          try {
+            const chunkBlob = audioBufferToWav(await extractChunk(audioBuffer, i, CHUNK_DURATION));
+            // 使用带重试的转录函数
+            const newSegments = await transcribeChunk(chunkBlob, apiKey, i, startTimeOffset, { maxRetries: 3 });
+            addSegments(newSegments, i);
+          } catch (err) {
+            console.error(err);
+            const appError = parseGeminiError(err);
+
+            // 如果错误可重试，则记录但继续；否则显示错误消息
+            if (!appError.retryable) {
+              setErrorMsg(appError.userMessage);
+            }
+
+            // 添加错误标记到转录结果
+            addSegments([{
+              speaker: 'System',
+              timestamp: 'Error',
+              startTimeSeconds: startTimeOffset,
+              text: `[轉錄此片段時發生錯誤 (${i + 1}): ${appError.userMessage}]`
+            }], i);
+          } finally {
+            inFlight--;
+            updateStats();
+          }
         }
+      };
+
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
+
+      if (abortControllerRef.current) {
+        setStatus(AppStatus.STOPPED);
+        return;
       }
 
       if (!abortControllerRef.current) {
         setStatus(AppStatus.COMPLETED);
         setStats(prev => ({ ...prev, currentAction: '完成！' }));
         // 完成后清除保存的进度
+        progressClosedRef.current = true;
         clearProgress();
       }
 
@@ -379,7 +406,8 @@ function App() {
                    <div className="flex-shrink-0 w-24 text-right pt-2">
                       <div className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded border border-transparent focus-within:border-indigo-300 focus-within:bg-white focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
                         <Clock className="w-3 h-3 text-slate-400" />
-                        <input 
+                        <input
+                          key={segment.startTimeSeconds}
                           type="text"
                           defaultValue={formatTime(segment.startTimeSeconds)}
                           onBlur={(e) => {

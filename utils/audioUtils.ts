@@ -19,33 +19,43 @@ export const decodeAudio = async (file: File): Promise<AudioBuffer> => {
   return await ctx.decodeAudioData(arrayBuffer);
 };
 
+// 語音辨識用 16kHz 單聲道就足夠，上傳量比 44.1/48kHz 立體聲小很多
+export const TRANSCRIBE_SAMPLE_RATE = 16000;
+
 /**
- * Splits an AudioBuffer into chunks of a specified duration (in seconds).
+ * Returns how many chunks of the given duration the audio splits into.
  */
-export const splitAudioBuffer = (audioBuffer: AudioBuffer, chunkDurationSeconds: number): AudioBuffer[] => {
+export const getChunkCount = (audioBuffer: AudioBuffer, chunkDurationSeconds: number): number =>
+  Math.ceil(audioBuffer.length / (chunkDurationSeconds * audioBuffer.sampleRate));
+
+/**
+ * Extracts one chunk, downmixes it to mono and resamples it to 16kHz.
+ * Chunks are prepared on demand so the whole file is never duplicated in memory.
+ */
+export const extractChunk = async (
+  audioBuffer: AudioBuffer,
+  chunkIndex: number,
+  chunkDurationSeconds: number
+): Promise<AudioBuffer> => {
   const sampleRate = audioBuffer.sampleRate;
-  const channels = audioBuffer.numberOfChannels;
-  const totalDuration = audioBuffer.duration;
   const chunkLengthFrames = chunkDurationSeconds * sampleRate;
-  
-  const chunks: AudioBuffer[] = [];
-  const ctx = getAudioContext();
-  
-  for (let startFrame = 0; startFrame < audioBuffer.length; startFrame += chunkLengthFrames) {
-    const endFrame = Math.min(startFrame + chunkLengthFrames, audioBuffer.length);
-    const frameCount = endFrame - startFrame;
-    const chunkBuffer = ctx.createBuffer(channels, frameCount, sampleRate);
-    
-    for (let channel = 0; channel < channels; channel++) {
-      const channelData = audioBuffer.getChannelData(channel);
-      // Copy the segment
-      chunkBuffer.copyToChannel(channelData.subarray(startFrame, endFrame), channel);
-    }
-    
-    chunks.push(chunkBuffer);
+  const startFrame = chunkIndex * chunkLengthFrames;
+  const endFrame = Math.min(startFrame + chunkLengthFrames, audioBuffer.length);
+  const frameCount = endFrame - startFrame;
+
+  const outputFrames = Math.max(1, Math.ceil((frameCount / sampleRate) * TRANSCRIBE_SAMPLE_RATE));
+  const offline = new OfflineAudioContext(1, outputFrames, TRANSCRIBE_SAMPLE_RATE);
+
+  const source = offline.createBuffer(audioBuffer.numberOfChannels, frameCount, sampleRate);
+  for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+    source.copyToChannel(audioBuffer.getChannelData(channel).subarray(startFrame, endFrame), channel);
   }
-  
-  return chunks;
+
+  const node = offline.createBufferSource();
+  node.buffer = source;
+  node.connect(offline.destination); // 1-channel destination downmixes stereo to mono
+  node.start();
+  return offline.startRendering();
 };
 
 /**
