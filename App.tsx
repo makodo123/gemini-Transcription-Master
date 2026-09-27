@@ -9,12 +9,12 @@ import { saveProgress, loadProgress, clearProgress } from './utils/progressStora
 import { parseGeminiError, parseAudioError } from './utils/errorHandling';
 
 // Chunk duration in seconds.
-// 每段的回應時間主要花在逐字產生文字，片段越短單段越快；3 分鐘兼顧速度與斷句。
-const CHUNK_DURATION = 180;
+// 實測 Gemini 端的處理量有上限，片段切更短不會更快，反而多了斷句與講者編號不一致；維持 5 分鐘。
+const CHUNK_DURATION = 300;
 
-// 同時送出的片段上限。片段彼此獨立，並行可大幅縮短長音檔的總時間。
+// 同時送出的片段上限。實測同時 8 段時每段反而變慢（Gemini 端排隊處理），總時間沒有縮短，因此設 3。
 // 遇到請求次數過多（429）時會自動減半，免費方案也不會一直失敗。
-const MAX_CONCURRENCY = 8;
+const MAX_CONCURRENCY = 3;
 
 function App() {
   // State
@@ -85,6 +85,9 @@ function App() {
       `API 請求 ${requestLog.length} 次：成功 ${ok.length}、失敗 ${failed.length}（其中請求次數過多 ${rateLimited.length} 次）`,
       times.length ? `單段請求耗時：平均 ${secs(avg)} 秒，最短 ${secs(Math.min(...times))} 秒，最長 ${secs(Math.max(...times))} 秒` : '',
       ok.length ? `每段 ${CHUNK_DURATION / 60} 分鐘、上傳約 ${ok[0].uploadMB} MB` : '',
+      ok.some(r => r.outputTokens !== undefined)
+        ? `每段平均輸出 ${Math.round(ok.reduce((a, r) => a + (r.outputTokens || 0), 0) / ok.length)} tokens、思考 ${Math.round(ok.reduce((a, r) => a + (r.thinkingTokens || 0), 0) / ok.length)} tokens`
+        : '',
       minConcurrency < MAX_CONCURRENCY
         ? `同時數：從 ${MAX_CONCURRENCY} 自動降到 ${minConcurrency}（遇到請求次數限制）`
         : `同時數：${MAX_CONCURRENCY}`,

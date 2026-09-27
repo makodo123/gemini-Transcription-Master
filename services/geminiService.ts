@@ -32,6 +32,8 @@ export interface RequestLogEntry {
   ok: boolean;
   uploadMB: number;
   outputChars?: number;
+  outputTokens?: number;
+  thinkingTokens?: number;
   error?: string;
 }
 
@@ -110,8 +112,8 @@ export const transcribeChunk = async (
         ]
       },
       config: {
-        // 逐字稿是聽寫任務，不需要長時間推理；調低思考等級可明顯縮短每段的等待時間
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        // 逐字稿是聽寫任務，幾乎不需要推理；思考內容也要逐字產生，設為最低以縮短等待時間
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.ARRAY,
@@ -131,6 +133,8 @@ export const transcribeChunk = async (
     const responseText = response.text;
     log.ms = Math.round(performance.now() - log.startedAt);
     log.outputChars = responseText?.length ?? 0;
+    log.outputTokens = response.usageMetadata?.candidatesTokenCount;
+    log.thinkingTokens = response.usageMetadata?.thoughtsTokenCount ?? 0;
     if (!responseText) {
       throw new Error("No response from Gemini");
     }
