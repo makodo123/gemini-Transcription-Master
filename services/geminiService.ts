@@ -95,7 +95,6 @@ export const transcribeChunk = async (
       2. 辨識說話者 (例如: 講者 1, 講者 2)。
       3. 提供每一句話相對於音訊開頭的時間點 (格式: MM:SS)。
       4. 如果音訊包含多種語言，請主要轉錄為中文，保留專有名詞原文。
-      5. 輸出格式必須是嚴格的 JSON 陣列。
     `;
 
     const response = await ai.models.generateContent({
