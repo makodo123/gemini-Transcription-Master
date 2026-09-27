@@ -1,21 +1,20 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, Clock, User, FileOutput, FileDown, RefreshCw } from 'lucide-react';
 import { decodeAudio, getChunkCount, extractChunk, audioBufferToWav, formatTime, generateSrtContent, parseTimeStringToSeconds } from './utils/audioUtils';
-import { transcribeChunk, MODEL_NAME } from './services/geminiService';
+import { transcribeChunk, MODEL_NAME, requestLog } from './services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
 import QuotaDisplay from './components/QuotaDisplay';
 import { saveProgress, loadProgress, clearProgress } from './utils/progressStorage';
 import { parseGeminiError, parseAudioError } from './utils/errorHandling';
 
-// Chunk duration in seconds. 
-// Gemini 3 Flash has large context, but splitting helps with progress updates and stability.
-// 5 minutes is a safe balance.
-const CHUNK_DURATION = 300;
+// Chunk duration in seconds.
+// 每段的回應時間主要花在逐字產生文字，片段越短單段越快；3 分鐘兼顧速度與斷句。
+const CHUNK_DURATION = 180;
 
-// 同時送出的片段數。片段彼此獨立，並行可大幅縮短長音檔的總時間；
-// 設 3 以免免費方案的每分鐘請求上限（RPM）被打滿。
-const CONCURRENCY = 3;
+// 同時送出的片段上限。片段彼此獨立，並行可大幅縮短長音檔的總時間。
+// 遇到請求次數過多（429）時會自動減半，免費方案也不會一直失敗。
+const MAX_CONCURRENCY = 8;
 
 function App() {
   // State
@@ -26,6 +25,7 @@ function App() {
   const [stats, setStats] = useState<ProcessingStats>({ totalChunks: 0, processedChunks: 0, currentAction: '' });
   const [transcripts, setTranscripts] = useState<TranscriptSegment[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [perfReport, setPerfReport] = useState<string | null>(null);
   const [quota, setQuota] = useState(100);
   const [includeTimestamps, setIncludeTimestamps] = useState(true);
 
@@ -71,11 +71,37 @@ function App() {
     });
   };
 
+  // 轉錄結束後的效能摘要：用來判斷時間花在解碼、等待 API，還是重試
+  const buildPerfReport = (totalMs: number, decodeMs: number, minConcurrency: number): string => {
+    const ok = requestLog.filter(r => r.ok);
+    const failed = requestLog.filter(r => !r.ok);
+    const rateLimited = failed.filter(r => /429|quota|rate|RESOURCE_EXHAUSTED/i.test(r.error || ''));
+    const secs = (ms: number) => (ms / 1000).toFixed(1);
+    const times = ok.map(r => r.ms);
+    const avg = times.length ? times.reduce((a, b) => a + b, 0) / times.length : 0;
+    console.table(requestLog);
+    return [
+      `總耗時 ${secs(totalMs)} 秒（解碼音檔 ${secs(decodeMs)} 秒）`,
+      `API 請求 ${requestLog.length} 次：成功 ${ok.length}、失敗 ${failed.length}（其中請求次數過多 ${rateLimited.length} 次）`,
+      times.length ? `單段請求耗時：平均 ${secs(avg)} 秒，最短 ${secs(Math.min(...times))} 秒，最長 ${secs(Math.max(...times))} 秒` : '',
+      ok.length ? `每段 ${CHUNK_DURATION / 60} 分鐘、上傳約 ${ok[0].uploadMB} MB` : '',
+      minConcurrency < MAX_CONCURRENCY
+        ? `同時數：從 ${MAX_CONCURRENCY} 自動降到 ${minConcurrency}（遇到請求次數限制）`
+        : `同時數：${MAX_CONCURRENCY}`,
+      failed.length ? `第一個失敗原因：${failed[0].error}` : '',
+    ].filter(Boolean).join('\n');
+  };
+
   const processAudio = async () => {
     if (!file || !apiKey) return;
     
     abortControllerRef.current = false;
     progressClosedRef.current = false;
+    requestLog.length = 0;
+    setPerfReport(null);
+    const runStartedAt = performance.now();
+    let decodeMs = 0;
+    let minConcurrency = MAX_CONCURRENCY;
     setStatus(AppStatus.PREPARING);
     setErrorMsg(null);
     
@@ -105,7 +131,9 @@ function App() {
     try {
       // 1. Decode
       setStats({ totalChunks: 0, processedChunks: 0, currentAction: '正在解碼音訊檔案 (這可能需要一點時間)...' });
+      const decodeStartedAt = performance.now();
       const audioBuffer = await decodeAudio(file);
+      decodeMs = performance.now() - decodeStartedAt;
       
       if (abortControllerRef.current) return;
 
@@ -142,8 +170,33 @@ function App() {
         updateStats();
       };
 
+      // 目前允許的同時數：遇到 429 減半（同一波被拒只算一次），之後每連續成功 4 段加回 1
+      let concurrencyLimit = MAX_CONCURRENCY;
+      let lastCutAt = 0;
+      let successesSinceCut = 0;
+      const onRateLimited = () => {
+        successesSinceCut = 0;
+        if (Date.now() - lastCutAt < 5000) return;
+        lastCutAt = Date.now();
+        concurrencyLimit = Math.max(1, Math.floor(concurrencyLimit / 2));
+        minConcurrency = Math.min(minConcurrency, concurrencyLimit);
+      };
+      const onChunkSucceeded = () => {
+        if (concurrencyLimit >= MAX_CONCURRENCY) return;
+        successesSinceCut++;
+        if (successesSinceCut >= 4) {
+          successesSinceCut = 0;
+          concurrencyLimit++;
+        }
+      };
+
       const worker = async () => {
         while (!abortControllerRef.current) {
+          // 同時數被調低時，多出來的 worker 先等其他片段完成
+          while (inFlight >= concurrencyLimit && !abortControllerRef.current) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+          if (abortControllerRef.current) return;
           const i = queue.shift();
           if (i === undefined) return;
 
@@ -157,7 +210,8 @@ function App() {
           try {
             const chunkBlob = audioBufferToWav(await extractChunk(audioBuffer, i, CHUNK_DURATION));
             // 使用带重试的转录函数
-            const newSegments = await transcribeChunk(chunkBlob, apiKey, i, startTimeOffset, { maxRetries: 3 });
+            const newSegments = await transcribeChunk(chunkBlob, apiKey, i, startTimeOffset, { maxRetries: 3, onRateLimited });
+            onChunkSucceeded();
             addSegments(newSegments, i);
           } catch (err) {
             console.error(err);
@@ -182,7 +236,7 @@ function App() {
         }
       };
 
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
+      await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, worker));
 
       if (abortControllerRef.current) {
         setStatus(AppStatus.STOPPED);
@@ -195,6 +249,7 @@ function App() {
         // 完成后清除保存的进度
         progressClosedRef.current = true;
         clearProgress();
+        setPerfReport(buildPerfReport(performance.now() - runStartedAt, decodeMs, minConcurrency));
       }
 
     } catch (err: any) {
@@ -358,6 +413,9 @@ function App() {
                  )}
                  {errorMsg && (
                    <p className="text-xs text-red-500 mt-2">{errorMsg}</p>
+                 )}
+                 {perfReport && (
+                   <pre className="text-xs text-slate-500 mt-3 whitespace-pre-wrap bg-slate-50 rounded p-2">{perfReport}</pre>
                  )}
                </div>
              )}

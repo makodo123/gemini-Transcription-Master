@@ -13,7 +13,29 @@ interface GeminiResponseItem {
 interface TranscribeOptions {
   maxRetries?: number;
   retryDelay?: number;
+  /** 遇到請求次數過多（429）時呼叫，讓呼叫端降低同時數 */
+  onRateLimited?: () => void;
 }
+
+export const isRateLimitError = (error: unknown): boolean =>
+  /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(String((error as Error)?.message || error));
+
+// 429 需要等配額恢復，退避時間比一般錯誤長
+const RATE_LIMIT_RETRY_DELAY = 5000;
+
+/** 每一次 API 請求的紀錄（含重試），用來找出長音檔轉錄慢在哪裡 */
+export interface RequestLogEntry {
+  chunk: number;
+  attempt: number;
+  startedAt: number;
+  ms: number;
+  ok: boolean;
+  uploadMB: number;
+  outputChars?: number;
+  error?: string;
+}
+
+export const requestLog: RequestLogEntry[] = [];
 
 /**
  * 带重试机制的转录函数
@@ -23,7 +45,7 @@ const transcribeWithRetry = async (
   chunkIndex: number,
   options: TranscribeOptions = {}
 ): Promise<TranscriptSegment[]> => {
-  const { maxRetries = 3, retryDelay = 1000 } = options;
+  const { maxRetries = 3, retryDelay = 1000, onRateLimited } = options;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -31,11 +53,14 @@ const transcribeWithRetry = async (
       return await fn();
     } catch (error) {
       lastError = error as Error;
-      
+      const rateLimited = isRateLimitError(error);
+      if (rateLimited) onRateLimited?.();
+
       if (attempt < maxRetries) {
         console.log(`Retry ${attempt + 1}/${maxRetries} for chunk ${chunkIndex + 1}`);
         // 指数退避策略
-        await new Promise(resolve => setTimeout(resolve, retryDelay * Math.pow(2, attempt)));
+        const baseDelay = rateLimited ? RATE_LIMIT_RETRY_DELAY : retryDelay;
+        await new Promise(resolve => setTimeout(resolve, baseDelay * Math.pow(2, attempt)));
       }
     }
   }
@@ -50,10 +75,14 @@ export const transcribeChunk = async (
   startTimeOffset: number,
   options?: TranscribeOptions
 ): Promise<TranscriptSegment[]> => {
+  let attempt = 0;
   return transcribeWithRetry(async () => {
+  const log: RequestLogEntry = { chunk: chunkIndex + 1, attempt: ++attempt, startedAt: performance.now(), ms: 0, ok: false, uploadMB: 0 };
+  requestLog.push(log);
   try {
     const ai = new GoogleGenAI({ apiKey });
     const base64Audio = await blobToBase64(audioBlob);
+    log.uploadMB = +(base64Audio.length / 1e6).toFixed(1);
 
     const prompt = `
       你是一位專業的繁體中文逐字稿聽寫員。
@@ -100,6 +129,8 @@ export const transcribeChunk = async (
     });
 
     const responseText = response.text;
+    log.ms = Math.round(performance.now() - log.startedAt);
+    log.outputChars = responseText?.length ?? 0;
     if (!responseText) {
       throw new Error("No response from Gemini");
     }
@@ -111,6 +142,8 @@ export const transcribeChunk = async (
       console.error("Failed to parse Gemini JSON", e);
       throw new Error("Gemini returned invalid JSON");
     }
+
+    log.ok = true;
 
     // Process timestamps to be absolute based on chunk offset
     return parsed.map(item => {
@@ -128,6 +161,8 @@ export const transcribeChunk = async (
 
   } catch (error) {
     console.error(`Error transcribing chunk ${chunkIndex}:`, error);
+    log.ms = log.ms || Math.round(performance.now() - log.startedAt);
+    log.error = String((error as Error)?.message || error).slice(0, 120);
     throw error;
   }
   }, chunkIndex, options);
