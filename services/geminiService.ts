@@ -1,6 +1,7 @@
 import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import { TranscriptSegment } from "../types";
-import { blobToBase64 } from "../utils/audioUtils";
+import { blobToBase64, parseTimeStringToSeconds } from "../utils/audioUtils";
+import { isRateLimitError, parseGeminiError } from "../utils/errorHandling";
 
 export const MODEL_NAME = 'gemini-3-flash-preview';
 
@@ -15,10 +16,21 @@ interface TranscribeOptions {
   retryDelay?: number;
   /** 遇到請求次數過多（429）時呼叫，讓呼叫端降低同時數 */
   onRateLimited?: () => void;
+  /** 使用者按下停止時中斷請求與重試等待 */
+  signal?: AbortSignal;
 }
 
-export const isRateLimitError = (error: unknown): boolean =>
-  /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(String((error as Error)?.message || error));
+/** 等待指定時間；signal 中斷時立即結束 */
+const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise(resolve => {
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    }
+  });
 
 // 429 需要等配額恢復，退避時間比一般錯誤長
 const RATE_LIMIT_RETRY_DELAY = 5000;
@@ -47,7 +59,7 @@ const transcribeWithRetry = async (
   chunkIndex: number,
   options: TranscribeOptions = {}
 ): Promise<TranscriptSegment[]> => {
-  const { maxRetries = 3, retryDelay = 1000, onRateLimited } = options;
+  const { maxRetries = 3, retryDelay = 1000, onRateLimited, signal } = options;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -55,6 +67,8 @@ const transcribeWithRetry = async (
       return await fn();
     } catch (error) {
       lastError = error as Error;
+      // 已停止、或 API Key 無效這類重試也不會成功的錯誤，直接拋出
+      if (signal?.aborted || !parseGeminiError(error).retryable) throw error;
       const rateLimited = isRateLimitError(error);
       if (rateLimited) onRateLimited?.();
 
@@ -62,7 +76,8 @@ const transcribeWithRetry = async (
         console.log(`Retry ${attempt + 1}/${maxRetries} for chunk ${chunkIndex + 1}`);
         // 指数退避策略
         const baseDelay = rateLimited ? RATE_LIMIT_RETRY_DELAY : retryDelay;
-        await new Promise(resolve => setTimeout(resolve, baseDelay * Math.pow(2, attempt)));
+        await sleep(baseDelay * Math.pow(2, attempt), signal);
+        if (signal?.aborted) throw error;
       }
     }
   }
@@ -84,6 +99,7 @@ export const transcribeChunk = async (
   try {
     const ai = new GoogleGenAI({ apiKey });
     const base64Audio = await blobToBase64(audioBlob);
+    options?.signal?.throwIfAborted();
     log.uploadMB = +(base64Audio.length / 1e6).toFixed(1);
 
     const prompt = `
@@ -111,6 +127,7 @@ export const transcribeChunk = async (
         ]
       },
       config: {
+        abortSignal: options?.signal,
         // 逐字稿是聽寫任務，幾乎不需要推理；思考內容也要逐字產生，設為最低以縮短等待時間
         thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
         responseMimeType: "application/json",
@@ -150,9 +167,8 @@ export const transcribeChunk = async (
 
     // Process timestamps to be absolute based on chunk offset
     return parsed.map(item => {
-      const [mm, ss] = item.timestamp.split(':').map(Number);
-      const segmentSeconds = (isNaN(mm) ? 0 : mm * 60) + (isNaN(ss) ? 0 : ss);
-      const absoluteSeconds = startTimeOffset + segmentSeconds;
+      // 模型偶爾會回 HH:MM:SS，不能只當 MM:SS 拆
+      const absoluteSeconds = startTimeOffset + (parseTimeStringToSeconds(item.timestamp) ?? 0);
       
       return {
         speaker: item.speaker,
