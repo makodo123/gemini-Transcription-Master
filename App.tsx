@@ -4,7 +4,6 @@ import { decodeAudio, getChunkCount, extractChunk, audioBufferToWav, formatTime,
 import { transcribeChunk, MODEL_NAME, requestLog } from './services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
-import QuotaDisplay from './components/QuotaDisplay';
 import { saveProgress, loadProgress, clearProgress } from './utils/progressStorage';
 import { parseGeminiError, parseAudioError, ErrorType } from './utils/errorHandling';
 
@@ -26,7 +25,6 @@ function App() {
   const [transcripts, setTranscripts] = useState<TranscriptSegment[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [perfReport, setPerfReport] = useState<string | null>(null);
-  const [quota, setQuota] = useState(100);
   const [includeTimestamps, setIncludeTimestamps] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -48,7 +46,6 @@ function App() {
   const handleSaveKey = (key: string) => {
     setApiKey(key);
     localStorage.setItem('gemini_api_key', key);
-    setQuota(100); // Reset simulation
   };
 
   // 檔案沒拖進上傳區就放開時，瀏覽器預設會直接開啟該檔案、離開本頁，先擋掉
@@ -260,9 +257,6 @@ function App() {
           updateStats();
           const startTimeOffset = i * CHUNK_DURATION;
 
-          // Decrease quota simulation
-          setQuota(prev => Math.max(0, prev - (2 + Math.random() * 2)));
-
           try {
             const chunkBlob = audioBufferToWav(await extractChunk(audioBuffer, i, CHUNK_DURATION));
             // 切片期間按了停止，就不要再送出請求
@@ -397,16 +391,24 @@ function App() {
         </div>
         <button 
           onClick={() => setKeyModalOpen(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg shadow-sm hover:bg-slate-50 text-slate-700 transition-colors"
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg shadow-sm transition-colors ${
+            apiKey
+              ? 'bg-white border border-slate-200 hover:bg-slate-50 text-slate-700'
+              : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+          }`}
         >
           <Settings className="w-4 h-4" />
-          <span>API Key 設定</span>
+          {apiKey ? (
+            <span>API Key <span className="font-mono">…{apiKey.slice(-4)}</span></span>
+          ) : (
+            <span>設定 API Key</span>
+          )}
         </button>
       </header>
 
       <main className="w-full max-w-4xl space-y-6">
         
-        {/* Quota and Status Bar */}
+        {/* Upload and Status */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="md:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
              <h2 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
@@ -490,11 +492,9 @@ function App() {
           </div>
 
           <div className="md:col-span-1">
-             <QuotaDisplay quotaPercentage={Math.round(quota)} apiKey={apiKey} />
-             
              {/* Progress Status Card */}
              {status !== AppStatus.IDLE && (
-               <div className="mt-4 bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
                  <div className="flex items-center gap-2 mb-2 font-medium text-slate-700">
                     {isBusy ? (
                       <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
