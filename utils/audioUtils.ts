@@ -1,120 +1,63 @@
 import { TranscriptSegment } from "../types";
 
-// 创建单例 AudioContext 以避免重复创建（性能优化）
-let audioContext: AudioContext | null = null;
-
-const getAudioContext = (): AudioContext => {
-  if (!audioContext) {
-    audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-  }
-  return audioContext;
-};
-
-/**
- * Decodes an audio file into an AudioBuffer.
- */
-export const decodeAudio = async (file: File): Promise<AudioBuffer> => {
-  const arrayBuffer = await file.arrayBuffer();
-  const ctx = getAudioContext();
-  return await ctx.decodeAudioData(arrayBuffer);
-};
-
 // 語音辨識用 16kHz 單聲道就足夠，上傳量比 44.1/48kHz 立體聲小很多
 export const TRANSCRIBE_SAMPLE_RATE = 16000;
 
 /**
- * Returns how many chunks of the given duration the audio splits into.
+ * Decodes an audio file into 16kHz mono 16-bit PCM, the exact format sent to Gemini.
+ * 只保留要上傳的格式：一小時約 115MB，若保留 48kHz 立體聲 float 則約 1.4GB。
  */
-export const getChunkCount = (audioBuffer: AudioBuffer, chunkDurationSeconds: number): number =>
-  Math.ceil(audioBuffer.length / (chunkDurationSeconds * audioBuffer.sampleRate));
+export const decodeAudio = async (file: File): Promise<Int16Array> => {
+  // 解碼時直接重新取樣成 16kHz（OfflineAudioContext 的取樣率決定 decodeAudioData 的輸出）
+  const ctx = new OfflineAudioContext(1, 1, TRANSCRIBE_SAMPLE_RATE);
+  const decoded = await ctx.decodeAudioData(await file.arrayBuffer());
 
-/**
- * Extracts one chunk, downmixes it to mono and resamples it to 16kHz.
- * Chunks are prepared on demand so the whole file is never duplicated in memory.
- */
-export const extractChunk = async (
-  audioBuffer: AudioBuffer,
-  chunkIndex: number,
-  chunkDurationSeconds: number
-): Promise<AudioBuffer> => {
-  const sampleRate = audioBuffer.sampleRate;
-  const chunkLengthFrames = chunkDurationSeconds * sampleRate;
-  const startFrame = chunkIndex * chunkLengthFrames;
-  const endFrame = Math.min(startFrame + chunkLengthFrames, audioBuffer.length);
-  const frameCount = endFrame - startFrame;
-
-  const outputFrames = Math.max(1, Math.ceil((frameCount / sampleRate) * TRANSCRIBE_SAMPLE_RATE));
-  const offline = new OfflineAudioContext(1, outputFrames, TRANSCRIBE_SAMPLE_RATE);
-
-  const source = offline.createBuffer(audioBuffer.numberOfChannels, frameCount, sampleRate);
-  for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
-    source.copyToChannel(audioBuffer.getChannelData(channel).subarray(startFrame, endFrame), channel);
+  // 下混成單聲道並轉成 16-bit；之後只留這份資料，解碼結果即可釋放
+  const channels = Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c));
+  const pcm = new Int16Array(decoded.length);
+  for (let i = 0; i < pcm.length; i++) {
+    let sum = 0;
+    for (const channel of channels) sum += channel[i];
+    const sample = Math.max(-1, Math.min(1, sum / channels.length));
+    pcm[i] = sample < 0 ? sample * 32768 : sample * 32767;
   }
-
-  const node = offline.createBufferSource();
-  node.buffer = source;
-  node.connect(offline.destination); // 1-channel destination downmixes stereo to mono
-  node.start();
-  return offline.startRendering();
+  return pcm;
 };
 
 /**
- * Converts an AudioBuffer to a WAV Blob.
+ * Returns how many chunks of the given duration the audio splits into.
+ */
+export const getChunkCount = (pcm: Int16Array, chunkDurationSeconds: number): number =>
+  Math.ceil(pcm.length / (chunkDurationSeconds * TRANSCRIBE_SAMPLE_RATE));
+
+/**
+ * Wraps one chunk of the decoded PCM in a WAV header.
  * Necessary because we need to send a valid file format to Gemini.
  */
-export const audioBufferToWav = (buffer: AudioBuffer): Blob => {
-  const numOfChan = buffer.numberOfChannels;
-  const length = buffer.length * numOfChan * 2 + 44;
-  const bufferArr = new ArrayBuffer(length);
-  const view = new DataView(bufferArr);
-  const channels = [];
-  let i;
-  let sample;
-  let offset = 0;
-  let pos = 0;
+export const pcmChunkToWav = (pcm: Int16Array, chunkIndex: number, chunkDurationSeconds: number): Blob => {
+  const chunkFrames = chunkDurationSeconds * TRANSCRIBE_SAMPLE_RATE;
+  const data = pcm.subarray(chunkIndex * chunkFrames, (chunkIndex + 1) * chunkFrames);
+  const dataBytes = data.length * 2;
 
-  // write WAVE header
-  setUint32(0x46464952); // "RIFF"
-  setUint32(length - 8); // file length - 8
-  setUint32(0x45564157); // "WAVE"
+  const header = new DataView(new ArrayBuffer(44));
+  const writeString = (offset: number, value: string) =>
+    [...value].forEach((char, i) => header.setUint8(offset + i, char.charCodeAt(0)));
+  writeString(0, 'RIFF');
+  header.setUint32(4, 36 + dataBytes, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  header.setUint32(16, 16, true); // fmt chunk length
+  header.setUint16(20, 1, true); // PCM (uncompressed)
+  header.setUint16(22, 1, true); // mono
+  header.setUint32(24, TRANSCRIBE_SAMPLE_RATE, true);
+  header.setUint32(28, TRANSCRIBE_SAMPLE_RATE * 2, true); // avg. bytes/sec
+  header.setUint16(32, 2, true); // block-align
+  header.setUint16(34, 16, true); // 16-bit
+  writeString(36, 'data');
+  header.setUint32(40, dataBytes, true);
 
-  setUint32(0x20746d66); // "fmt " chunk
-  setUint32(16); // length = 16
-  setUint16(1); // PCM (uncompressed)
-  setUint16(numOfChan);
-  setUint32(buffer.sampleRate);
-  setUint32(buffer.sampleRate * 2 * numOfChan); // avg. bytes/sec
-  setUint16(numOfChan * 2); // block-align
-  setUint16(16); // 16-bit (hardcoded in this encoder)
-
-  setUint32(0x61746164); // "data" - chunk
-  setUint32(length - pos - 4); // chunk length
-
-  // write interleaved data
-  for (i = 0; i < buffer.numberOfChannels; i++)
-    channels.push(buffer.getChannelData(i));
-
-  while (pos < buffer.length) {
-    for (i = 0; i < numOfChan; i++) { // interleave channels
-      sample = Math.max(-1, Math.min(1, channels[i][pos])); // clamp
-      sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0; // scale to 16-bit signed int
-      view.setInt16(44 + offset, sample, true); // write 16-bit sample
-      offset += 2;
-    }
-    pos++;
-  }
-
-  return new Blob([bufferArr], { type: 'audio/wav' });
-
-  function setUint16(data: number) {
-    view.setUint16(pos, data, true);
-    pos += 2;
-  }
-
-  function setUint32(data: number) {
-    view.setUint32(pos, data, true);
-    pos += 4;
-  }
+  // Int16Array 依平台位元組序儲存；瀏覽器執行的平台皆為 little-endian，與 WAV 相同
+  return new Blob([header, data], { type: 'audio/wav' });
 };
 
 /**

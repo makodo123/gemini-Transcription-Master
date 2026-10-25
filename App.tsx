@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, Clock, User, FileOutput, FileDown, RefreshCw } from 'lucide-react';
-import { decodeAudio, getChunkCount, extractChunk, audioBufferToWav, formatTime, generateSrtContent, parseTimeStringToSeconds } from './utils/audioUtils';
+import { decodeAudio, getChunkCount, pcmChunkToWav, formatTime, generateSrtContent, parseTimeStringToSeconds } from './utils/audioUtils';
 import { transcribeChunk, MODEL_NAME, requestLog } from './services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
@@ -174,13 +174,13 @@ function App() {
       // 1. Decode
       setStats({ totalChunks: 0, processedChunks: 0, currentAction: '正在解碼音訊檔案 (這可能需要一點時間)...' });
       const decodeStartedAt = performance.now();
-      const audioBuffer = await decodeAudio(file);
+      const pcm = await decodeAudio(file);
       decodeMs = performance.now() - decodeStartedAt;
       
       if (signal.aborted) return;
 
-      // 2. Plan chunks (each chunk is cut and resampled only when it is sent)
-      const totalChunks = getChunkCount(audioBuffer, CHUNK_DURATION);
+      // 2. Plan chunks (each chunk is wrapped as WAV only when it is sent)
+      const totalChunks = getChunkCount(pcm, CHUNK_DURATION);
       const resuming = !!(savedProgress && savedProgress.transcripts.length > 0 && savedProgress.totalChunks === totalChunks);
       const allChunks = Array.from({ length: totalChunks }, (_, i) => i);
       const completed = new Set<number>(
@@ -258,9 +258,7 @@ function App() {
           const startTimeOffset = i * CHUNK_DURATION;
 
           try {
-            const chunkBlob = audioBufferToWav(await extractChunk(audioBuffer, i, CHUNK_DURATION));
-            // 切片期間按了停止，就不要再送出請求
-            if (signal.aborted) return;
+            const chunkBlob = pcmChunkToWav(pcm, i, CHUNK_DURATION);
             // 使用带重试的转录函数
             const newSegments = await transcribeChunk(chunkBlob, apiKey, i, startTimeOffset, { maxRetries: 3, onRateLimited, signal });
             // 已停止：結果不寫入，這段之後續傳會再送
