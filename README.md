@@ -1,6 +1,6 @@
 # Gemini 逐字稿大師
 
-[![Deploy to GitHub Pages](https://github.com/makodo123/gemini-Transcription-Master/actions/workflows/deploy.yml/badge.svg)](https://github.com/makodo123/gemini-Transcription-Master/actions/workflows/deploy.yml) [![Live Demo](https://img.shields.io/badge/demo-live-brightgreen)](https://makodo123.github.io/gemini-Transcription-Master/)
+[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen)](https://makodo123.github.io/gemini-Transcription-Master/)
 
 
 
