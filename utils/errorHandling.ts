@@ -32,6 +32,9 @@ export class AppError extends Error {
   }
 }
 
+export const isRateLimitError = (error: unknown): boolean =>
+  /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(String((error as Error)?.message || error));
+
 /**
  * 解析 Gemini API 错误
  */
@@ -39,7 +42,7 @@ export const parseGeminiError = (error: any): AppError => {
   const errorMessage = error?.message || error?.toString() || '';
 
   // API Key 错误
-  if (errorMessage.includes('API key') || errorMessage.includes('authentication')) {
+  if (/API key|API_KEY_INVALID|authentication/i.test(errorMessage)) {
     return new AppError(
       ErrorType.INVALID_API_KEY,
       errorMessage,
@@ -49,7 +52,7 @@ export const parseGeminiError = (error: any): AppError => {
   }
 
   // 配額超限
-  if (errorMessage.includes('quota') || errorMessage.includes('rate limit')) {
+  if (isRateLimitError(error)) {
     return new AppError(
       ErrorType.QUOTA_EXCEEDED,
       errorMessage,

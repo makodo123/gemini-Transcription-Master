@@ -6,7 +6,7 @@ import { AppStatus, TranscriptSegment, ProcessingStats } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
 import QuotaDisplay from './components/QuotaDisplay';
 import { saveProgress, loadProgress, clearProgress } from './utils/progressStorage';
-import { parseGeminiError, parseAudioError } from './utils/errorHandling';
+import { parseGeminiError, parseAudioError, ErrorType } from './utils/errorHandling';
 
 // Chunk duration in seconds.
 // 實測 Gemini 端的處理量有上限，片段切更短不會更快，反而多了斷句與講者編號不一致；維持 5 分鐘。
@@ -28,9 +28,11 @@ function App() {
   const [perfReport, setPerfReport] = useState<string | null>(null);
   const [quota, setQuota] = useState(100);
   const [includeTimestamps, setIncludeTimestamps] = useState(true);
+  const [isDragging, setIsDragging] = useState(false);
 
   // Refs
-  const abortControllerRef = useRef<boolean>(false);
+  // 每一輪轉錄各用一個 AbortController：停止後馬上重新開始，上一輪還沒結束的工作也不會混進新的一輪
+  const abortControllerRef = useRef<AbortController | null>(null);
   // 轉錄完成後設為 true，避免延後執行的 state 更新又把進度寫回 localStorage
   const progressClosedRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -49,18 +51,46 @@ function App() {
     setQuota(100); // Reset simulation
   };
 
+  // 檔案沒拖進上傳區就放開時，瀏覽器預設會直接開啟該檔案、離開本頁，先擋掉
+  useEffect(() => {
+    const preventDefault = (e: DragEvent) => e.preventDefault();
+    window.addEventListener('dragover', preventDefault);
+    window.addEventListener('drop', preventDefault);
+    return () => {
+      window.removeEventListener('dragover', preventDefault);
+      window.removeEventListener('drop', preventDefault);
+    };
+  }, []);
+
+  const isBusy = status === AppStatus.PROCESSING || status === AppStatus.PREPARING;
+  const failedCount = transcripts.filter(t => t.failedChunk !== undefined).length;
+
+  const selectFile = (selected: File) => {
+    setFile(selected);
+    setStatus(AppStatus.IDLE);
+    setTranscripts([]);
+    setErrorMsg(null);
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
-      setStatus(AppStatus.IDLE);
-      setTranscripts([]);
-      setErrorMsg(null);
+      selectFile(e.target.files[0]);
     }
   };
 
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    // 轉錄中換檔會讓進行中的結果寫到新檔案上
+    if (isBusy) return;
+    const dropped = e.dataTransfer.files[0];
+    if (dropped) selectFile(dropped);
+  };
+
   const stopProcessing = () => {
-    abortControllerRef.current = true;
+    abortControllerRef.current?.abort();
     setStatus(AppStatus.STOPPED);
+    setStats(prev => ({ ...prev, currentAction: '已停止，已完成的片段已保存' }));
   };
 
   const updateTranscriptSegment = (index: number, field: keyof TranscriptSegment, value: string | number) => {
@@ -95,10 +125,15 @@ function App() {
     ].filter(Boolean).join('\n');
   };
 
-  const processAudio = async () => {
+  // retryFailed：只重送失敗的片段，沿用畫面上（可能已編輯過）的逐字稿
+  const processAudio = async (retryFailed = false) => {
     if (!file || !apiKey) return;
     
-    abortControllerRef.current = false;
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const { signal } = controller;
+    // API Key 無效或配額用盡時整輪暫停，記下原因
+    let fatalError: string | null = null;
     progressClosedRef.current = false;
     requestLog.length = 0;
     setPerfReport(null);
@@ -108,15 +143,22 @@ function App() {
     setStatus(AppStatus.PREPARING);
     setErrorMsg(null);
     
+    const retryChunks = retryFailed
+      ? new Set(transcripts.flatMap(t => t.failedChunk !== undefined ? [t.failedChunk] : []))
+      : null;
+
     // 检查是否有保存的进度
-    let savedProgress = loadProgress(file.name, file.size);
-    if (savedProgress && savedProgress.transcripts.length > 0) {
+    let savedProgress = retryChunks ? null : loadProgress(file.name, file.size);
+    if (retryChunks) {
+      setTranscripts(prev => prev.filter(t => t.failedChunk === undefined));
+    } else if (savedProgress && savedProgress.transcripts.length > 0) {
       const shouldResume = window.confirm(
         `找到未完成的轉錄進度 (${savedProgress.processedChunks}/${savedProgress.totalChunks} 個片段已完成)。是否要繼續？`
       );
       
       if (shouldResume) {
-        setTranscripts(savedProgress.transcripts);
+        // 失敗片段的佔位段落拿掉，這些片段會重送
+        setTranscripts(savedProgress.transcripts.filter(t => t.failedChunk === undefined));
         setStats({
           totalChunks: savedProgress.totalChunks,
           processedChunks: savedProgress.processedChunks,
@@ -138,28 +180,39 @@ function App() {
       const audioBuffer = await decodeAudio(file);
       decodeMs = performance.now() - decodeStartedAt;
       
-      if (abortControllerRef.current) return;
+      if (signal.aborted) return;
 
       // 2. Plan chunks (each chunk is cut and resampled only when it is sent)
       const totalChunks = getChunkCount(audioBuffer, CHUNK_DURATION);
       const resuming = !!(savedProgress && savedProgress.transcripts.length > 0 && savedProgress.totalChunks === totalChunks);
-      const completed = new Set<number>(resuming ? savedProgress!.completedChunks : []);
-      if (!resuming) setTranscripts([]);
-      const queue = Array.from({ length: totalChunks }, (_, i) => i).filter(i => !completed.has(i));
+      const allChunks = Array.from({ length: totalChunks }, (_, i) => i);
+      const completed = new Set<number>(
+        retryChunks ? allChunks.filter(i => !retryChunks.has(i))
+          : resuming ? savedProgress!.completedChunks
+          : []
+      );
+      // 失敗的片段不算完成，續傳或「重試失敗片段」時會再送一次
+      const failed = new Set<number>();
+      if (!resuming && !retryChunks) setTranscripts([]);
+      const queue = allChunks.filter(i => !completed.has(i));
       let inFlight = 0;
 
-      const updateStats = () => setStats({
-        totalChunks,
-        processedChunks: completed.size,
-        currentAction: `正在同時轉錄 ${inFlight} 個片段（已完成 ${completed.size} / ${totalChunks}）...`
-      });
+      const updateStats = () => {
+        if (signal.aborted) return;
+        setStats({
+          totalChunks,
+          processedChunks: completed.size + failed.size,
+          currentAction: `正在同時轉錄 ${inFlight} 個片段（已完成 ${completed.size} / ${totalChunks}）...`
+        });
+      };
 
       setStats({ totalChunks, processedChunks: completed.size, currentAction: '準備開始轉錄...' });
       setStatus(AppStatus.PROCESSING);
 
       // 3. Process chunks with a small worker pool
       const addSegments = (segments: TranscriptSegment[], chunkIndex: number) => {
-        completed.add(chunkIndex);
+        const chunkFailed = segments.some(seg => seg.failedChunk !== undefined);
+        (chunkFailed ? failed : completed).add(chunkIndex);
         const completedList = [...completed];
         setTranscripts(prev => {
           // 片段完成順序不固定，依時間排序後再顯示（sort 為穩定排序，同段內順序不變）；
@@ -194,12 +247,12 @@ function App() {
       };
 
       const worker = async () => {
-        while (!abortControllerRef.current) {
+        while (!signal.aborted) {
           // 同時數被調低時，多出來的 worker 先等其他片段完成
-          while (inFlight >= concurrencyLimit && !abortControllerRef.current) {
+          while (inFlight >= concurrencyLimit && !signal.aborted) {
             await new Promise(resolve => setTimeout(resolve, 300));
           }
-          if (abortControllerRef.current) return;
+          if (signal.aborted) return;
           const i = queue.shift();
           if (i === undefined) return;
 
@@ -212,17 +265,24 @@ function App() {
 
           try {
             const chunkBlob = audioBufferToWav(await extractChunk(audioBuffer, i, CHUNK_DURATION));
+            // 切片期間按了停止，就不要再送出請求
+            if (signal.aborted) return;
             // 使用带重试的转录函数
-            const newSegments = await transcribeChunk(chunkBlob, apiKey, i, startTimeOffset, { maxRetries: 3, onRateLimited });
+            const newSegments = await transcribeChunk(chunkBlob, apiKey, i, startTimeOffset, { maxRetries: 3, onRateLimited, signal });
+            // 已停止：結果不寫入，這段之後續傳會再送
+            if (signal.aborted) return;
             onChunkSucceeded();
             addSegments(newSegments, i);
           } catch (err) {
+            if (signal.aborted) return;
             console.error(err);
             const appError = parseGeminiError(err);
 
-            // 如果错误可重试，则记录但继续；否则显示错误消息
-            if (!appError.retryable) {
-              setErrorMsg(appError.userMessage);
+            // API Key 無效、或重試後仍超過配額：後面的片段也只會失敗，整輪暫停
+            if (appError.type === ErrorType.INVALID_API_KEY || appError.type === ErrorType.QUOTA_EXCEEDED) {
+              fatalError = appError.userMessage;
+              controller.abort();
+              return;
             }
 
             // 添加错误标记到转录结果
@@ -230,7 +290,8 @@ function App() {
               speaker: 'System',
               timestamp: 'Error',
               startTimeSeconds: startTimeOffset,
-              text: `[轉錄此片段時發生錯誤 (${i + 1}): ${appError.userMessage}]`
+              text: `[轉錄此片段時發生錯誤 (${i + 1}): ${appError.userMessage}]`,
+              failedChunk: i
             }], i);
           } finally {
             inFlight--;
@@ -241,21 +302,33 @@ function App() {
 
       await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, worker));
 
-      if (abortControllerRef.current) {
-        setStatus(AppStatus.STOPPED);
+      // 已有新的一輪開始，這一輪的結果不再更新畫面
+      if (abortControllerRef.current !== controller) return;
+
+      if (fatalError) {
+        setErrorMsg(`${fatalError}。已完成的片段已保存，處理後再按「開始辨識」即可從中斷處繼續。`);
+        setStats(prev => ({ ...prev, currentAction: '已暫停' }));
+        setStatus(AppStatus.ERROR);
         return;
       }
 
-      if (!abortControllerRef.current) {
-        setStatus(AppStatus.COMPLETED);
+      // 使用者按了停止，狀態已由 stopProcessing 設定
+      if (signal.aborted) return;
+
+      setStatus(AppStatus.COMPLETED);
+      setPerfReport(buildPerfReport(performance.now() - runStartedAt, decodeMs, minConcurrency));
+      if (failed.size > 0) {
+        // 保留進度，重新整理頁面後也能只重送失敗的片段
+        setStats(prev => ({ ...prev, currentAction: `完成，但有 ${failed.size} 個片段失敗` }));
+      } else {
         setStats(prev => ({ ...prev, currentAction: '完成！' }));
         // 完成后清除保存的进度
         progressClosedRef.current = true;
         clearProgress();
-        setPerfReport(buildPerfReport(performance.now() - runStartedAt, decodeMs, minConcurrency));
       }
 
     } catch (err: any) {
+      if (signal.aborted) return;
       console.error("Processing error:", err);
       const appError = err.name === 'AppError' ? err : parseAudioError(err);
       setErrorMsg(appError.userMessage);
@@ -342,9 +415,22 @@ function App() {
              </h2>
              
              <div 
-               onClick={() => fileInputRef.current?.click()}
-               className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${
-                 file ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 hover:border-slate-400 hover:bg-slate-50'
+               onClick={() => !isBusy && fileInputRef.current?.click()}
+               onDragOver={(e) => {
+                 e.preventDefault();
+                 if (!isBusy) setIsDragging(true);
+               }}
+               onDragLeave={(e) => {
+                 // 移到子元素上也會觸發 dragleave，真的離開上傳區才取消
+                 if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragging(false);
+               }}
+               onDrop={handleDrop}
+               className={`border-2 border-dashed rounded-xl p-8 text-center transition-all ${
+                 isBusy ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+               } ${
+                 isDragging ? 'border-indigo-500 bg-indigo-100'
+                   : file ? 'border-indigo-500 bg-indigo-50'
+                   : 'border-slate-300 hover:border-slate-400 hover:bg-slate-50'
                }`}
              >
                <input 
@@ -352,6 +438,7 @@ function App() {
                  ref={fileInputRef} 
                  onChange={handleFileChange} 
                  accept="audio/*" 
+                 disabled={isBusy}
                  className="hidden" 
                />
                {file ? (
@@ -369,7 +456,7 @@ function App() {
              </div>
 
              <div className="mt-6 flex justify-end gap-3">
-                {status === AppStatus.PROCESSING || status === AppStatus.PREPARING ? (
+                {isBusy ? (
                   <button 
                     onClick={stopProcessing}
                     className="px-6 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium flex items-center gap-2 transition-colors shadow-sm"
@@ -378,14 +465,26 @@ function App() {
                     停止辨識
                   </button>
                 ) : (
-                  <button 
-                    onClick={processAudio}
-                    disabled={!file || !apiKey}
-                    className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-lg font-medium flex items-center gap-2 transition-colors shadow-sm"
-                  >
-                    {status === AppStatus.COMPLETED ? '重新辨識' : '開始辨識'}
-                    <Play className="w-4 h-4 fill-current" />
-                  </button>
+                  <>
+                    {status === AppStatus.COMPLETED && failedCount > 0 && (
+                      <button 
+                        onClick={() => processAudio(true)}
+                        disabled={!file || !apiKey}
+                        className="px-6 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-lg font-medium flex items-center gap-2 transition-colors shadow-sm"
+                      >
+                        重試失敗的 {failedCount} 段
+                        <RefreshCw className="w-4 h-4" />
+                      </button>
+                    )}
+                    <button 
+                      onClick={() => processAudio()}
+                      disabled={!file || !apiKey}
+                      className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-lg font-medium flex items-center gap-2 transition-colors shadow-sm"
+                    >
+                      {status === AppStatus.COMPLETED ? '重新辨識' : '開始辨識'}
+                      <Play className="w-4 h-4 fill-current" />
+                    </button>
+                  </>
                 )}
              </div>
           </div>
@@ -397,10 +496,10 @@ function App() {
              {status !== AppStatus.IDLE && (
                <div className="mt-4 bg-white rounded-xl shadow-sm border border-slate-200 p-4">
                  <div className="flex items-center gap-2 mb-2 font-medium text-slate-700">
-                    {status === AppStatus.PROCESSING || status === AppStatus.PREPARING ? (
+                    {isBusy ? (
                       <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
                     ) : status === AppStatus.COMPLETED ? (
-                      <div className="w-2 h-2 rounded-full bg-green-500" />
+                      <div className={`w-2 h-2 rounded-full ${failedCount > 0 ? 'bg-amber-500' : 'bg-green-500'}`} />
                     ) : (
                       <div className="w-2 h-2 rounded-full bg-red-500" />
                     )}
@@ -464,7 +563,7 @@ function App() {
             <div className="divide-y divide-slate-100 max-h-[600px] overflow-y-auto p-4 space-y-4">
               {transcripts.map((segment, idx) => (
                 <div key={idx} className="flex gap-4 group items-start hover:bg-slate-50/50 transition-colors">
-                   <div className="flex-shrink-0 w-24 text-right pt-2">
+                   <div className="flex-shrink-0 w-28 text-right pt-2">
                       <div className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded border border-transparent focus-within:border-indigo-300 focus-within:bg-white focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
                         <Clock className="w-3 h-3 text-slate-400" />
                         <input
@@ -473,7 +572,7 @@ function App() {
                           defaultValue={formatTime(segment.startTimeSeconds)}
                           onBlur={(e) => {
                              const seconds = parseTimeStringToSeconds(e.target.value);
-                             if (seconds >= 0) {
+                             if (seconds !== null) {
                                updateTranscriptSegment(idx, 'startTimeSeconds', seconds);
                                // Force re-render of formatted value if strictly needed, 
                                // but normally we just need the model to update.
@@ -487,7 +586,7 @@ function App() {
                               e.currentTarget.blur();
                             }
                           }}
-                          className="w-12 bg-transparent text-xs font-mono text-slate-600 focus:outline-none text-center"
+                          className="w-14 bg-transparent text-xs font-mono text-slate-600 focus:outline-none text-center"
                         />
                       </div>
                    </div>
@@ -511,7 +610,7 @@ function App() {
                 </div>
               ))}
               
-              {(status === AppStatus.PROCESSING || status === AppStatus.PREPARING) && (
+              {isBusy && (
                  <div className="flex justify-center py-8">
                    <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
                  </div>

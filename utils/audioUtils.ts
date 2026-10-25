@@ -151,25 +151,12 @@ export const formatTime = (seconds: number): string => {
 
 /**
  * Parses a time string (e.g. "1:30", "05:12", "1:02:03") back into total seconds.
- * Returns 0 if parsing fails.
+ * Returns null if the string is not a valid time.
  */
-export const parseTimeStringToSeconds = (timeStr: string): number => {
-  try {
-    const parts = timeStr.trim().split(':').map(Number);
-    if (parts.some(isNaN)) return 0;
-
-    let seconds = 0;
-    if (parts.length === 3) { // HH:MM:SS
-      seconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
-    } else if (parts.length === 2) { // MM:SS
-      seconds = parts[0] * 60 + parts[1];
-    } else if (parts.length === 1) { // SS
-      seconds = parts[0];
-    }
-    return seconds;
-  } catch (e) {
-    return 0;
-  }
+export const parseTimeStringToSeconds = (timeStr: string): number | null => {
+  const parts = timeStr.trim().split(':');
+  if (parts.length > 3 || parts.some(p => !/^\d+(\.\d+)?$/.test(p))) return null;
+  return parts.map(Number).reduce((total, part) => total * 60 + part, 0);
 };
 
 /**
