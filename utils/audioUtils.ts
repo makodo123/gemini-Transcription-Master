@@ -1,13 +1,35 @@
 import { TranscriptSegment } from "../types";
+import { decodeStreaming } from "./streamDecode";
 
 // 語音辨識用 16kHz 單聲道就足夠，上傳量比 44.1/48kHz 立體聲小很多
 export const TRANSCRIBE_SAMPLE_RATE = 16000;
 
+interface DecodeOptions {
+  signal?: AbortSignal;
+  /** 解碼進度 0–1；只有分段解碼時會回報 */
+  onProgress?: (fraction: number) => void;
+}
+
 /**
  * Decodes an audio file into 16kHz mono 16-bit PCM, the exact format sent to Gemini.
+ * 先嘗試分段解碼（峰值記憶體不隨檔案長度暴增），格式或瀏覽器不支援時改用整檔解碼。
+ */
+export const decodeAudio = async (file: File, options: DecodeOptions = {}): Promise<Int16Array> => {
+  try {
+    const pcm = await decodeStreaming(file, { outputRate: TRANSCRIBE_SAMPLE_RATE, ...options });
+    if (pcm) return pcm;
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    console.warn('Streaming decode failed, falling back to decodeAudioData:', error);
+  }
+  return decodeWholeFile(file);
+};
+
+/**
+ * 整檔解碼：decodeAudioData 會先以原始取樣率解出整個檔案，長音檔的峰值記憶體很高，只作為備用。
  * 只保留要上傳的格式：一小時約 115MB，若保留 48kHz 立體聲 float 則約 1.4GB。
  */
-export const decodeAudio = async (file: File): Promise<Int16Array> => {
+const decodeWholeFile = async (file: File): Promise<Int16Array> => {
   // 解碼時直接重新取樣成 16kHz（OfflineAudioContext 的取樣率決定 decodeAudioData 的輸出）
   const ctx = new OfflineAudioContext(1, 1, TRANSCRIBE_SAMPLE_RATE);
   const decoded = await ctx.decodeAudioData(await file.arrayBuffer());
@@ -24,11 +46,14 @@ export const decodeAudio = async (file: File): Promise<Int16Array> => {
   return pcm;
 };
 
+// 結尾剩不到 1 秒時併入前一段，不單獨送出（編碼器延遲常讓長度多出幾十毫秒）
+const MIN_TAIL_FRAMES = TRANSCRIBE_SAMPLE_RATE;
+
 /**
  * Returns how many chunks of the given duration the audio splits into.
  */
 export const getChunkCount = (pcm: Int16Array, chunkDurationSeconds: number): number =>
-  Math.ceil(pcm.length / (chunkDurationSeconds * TRANSCRIBE_SAMPLE_RATE));
+  Math.max(1, Math.ceil((pcm.length - MIN_TAIL_FRAMES) / (chunkDurationSeconds * TRANSCRIBE_SAMPLE_RATE)));
 
 /**
  * Wraps one chunk of the decoded PCM in a WAV header.
@@ -36,7 +61,9 @@ export const getChunkCount = (pcm: Int16Array, chunkDurationSeconds: number): nu
  */
 export const pcmChunkToWav = (pcm: Int16Array, chunkIndex: number, chunkDurationSeconds: number): Blob => {
   const chunkFrames = chunkDurationSeconds * TRANSCRIBE_SAMPLE_RATE;
-  const data = pcm.subarray(chunkIndex * chunkFrames, (chunkIndex + 1) * chunkFrames);
+  let end = (chunkIndex + 1) * chunkFrames;
+  if (pcm.length - end < MIN_TAIL_FRAMES) end = pcm.length;
+  const data = pcm.subarray(chunkIndex * chunkFrames, end);
   const dataBytes = data.length * 2;
 
   const header = new DataView(new ArrayBuffer(44));

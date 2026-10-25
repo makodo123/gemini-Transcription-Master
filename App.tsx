@@ -174,7 +174,16 @@ function App() {
       // 1. Decode
       setStats({ totalChunks: 0, processedChunks: 0, currentAction: '正在解碼音訊檔案 (這可能需要一點時間)...' });
       const decodeStartedAt = performance.now();
-      const pcm = await decodeAudio(file);
+      let decodePercent = -1;
+      const pcm = await decodeAudio(file, {
+        signal,
+        onProgress: fraction => {
+          const percent = Math.floor(fraction * 100);
+          if (percent === decodePercent || signal.aborted) return;
+          decodePercent = percent;
+          setStats({ totalChunks: 0, processedChunks: 0, currentAction: `正在解碼音訊檔案 ${percent}%...` });
+        }
+      });
       decodeMs = performance.now() - decodeStartedAt;
       
       if (signal.aborted) return;
