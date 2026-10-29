@@ -77,6 +77,21 @@ export const loadProgress = (
 };
 
 /**
+ * 不指定檔案，看看有沒有未完成的進度（用來在頁面上提醒使用者）
+ */
+export const peekProgress = (): Pick<SavedProgress, 'fileName' | 'fileSize' | 'processedChunks' | 'totalChunks'> | null => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return null;
+    const progress: SavedProgress = JSON.parse(saved);
+    return loadProgress(progress.fileName, progress.fileSize);
+  } catch (error) {
+    console.error('Failed to read progress:', error);
+    return null;
+  }
+};
+
+/**
  * 清除保存的进度
  */
 export const clearProgress = (): void => {

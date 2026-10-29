@@ -1,4 +1,6 @@
 export interface TranscriptSegment {
+  /** 畫面列表用的穩定識別碼；舊版保存的進度沒有，載入時補上 */
+  id?: string;
   speaker: string;
   timestamp: string; // Original timestamp string from AI (e.g. "00:15")
   startTimeSeconds: number; // Calculated absolute seconds

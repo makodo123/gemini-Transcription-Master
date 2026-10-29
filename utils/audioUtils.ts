@@ -165,17 +165,32 @@ export const formatSrtTime = (seconds: number): string => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
 };
 
+// 每條字幕的顯示時間：依字數估算（中文約每秒 4 字），介於最短與最長之間，且不超過下一句開始
+const SRT_CHARS_PER_SECOND = 4;
+const SRT_MIN_SECONDS = 1.5;
+const SRT_MAX_SECONDS = 7;
+const SRT_OVERLAP_SECONDS = 0.5;
+
 /**
  * Generates SRT formatted string from transcript segments
  */
 export const generateSrtContent = (segments: TranscriptSegment[]): string => {
-  return segments.map((segment, index) => {
-    const nextSegment = segments[index + 1];
-    // Estimate end time as start of next segment, or start + 5s if last
-    const endTime = nextSegment ? nextSegment.startTimeSeconds : segment.startTimeSeconds + 5;
-    
+  const cues = segments
+    // 字幕中的空白行會被播放器當成這條字幕結束，合併成單一換行；空白段落不輸出
+    .map(segment => ({ ...segment, text: segment.text.replace(/\s*\n\s*\n\s*/g, '\n').trim() }))
+    .filter(segment => segment.text)
+    // 時間可能被手動改過，依時間排序（穩定排序，同時間的句子維持原順序）
+    .sort((a, b) => a.startTimeSeconds - b.startTimeSeconds);
+
+  return cues.map((segment, index) => {
+    const start = segment.startTimeSeconds;
+    const reading = Math.min(SRT_MAX_SECONDS, Math.max(SRT_MIN_SECONDS, segment.text.length / SRT_CHARS_PER_SECOND));
+    const nextStart = cues[index + 1]?.startTimeSeconds ?? Infinity;
+    // 下一句和這句同一秒開始時，至少顯示 0.5 秒（與下一句重疊）
+    const end = Math.max(start + SRT_OVERLAP_SECONDS, Math.min(start + reading, nextStart));
+
     return `${index + 1}
-${formatSrtTime(segment.startTimeSeconds)} --> ${formatSrtTime(endTime)}
+${formatSrtTime(start)} --> ${formatSrtTime(end)}
 ${segment.speaker}: ${segment.text}`;
-  }).join('\n\n');
+  }).join('\n\n') + '\n';
 };

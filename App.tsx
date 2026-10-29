@@ -1,12 +1,12 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, Clock, User, FileOutput, FileDown, RefreshCw, CheckCircle2, Circle, Info, Copy, Check, Users } from 'lucide-react';
-import { decodeAudio, getChunkCount, getChunkCountForDuration, getAudioDuration, pcmChunkToWav, formatTime, generateSrtContent, parseTimeStringToSeconds, TRANSCRIBE_SAMPLE_RATE } from './utils/audioUtils';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, FileOutput, FileDown, RefreshCw, CheckCircle2, Circle, Info, Copy, Check, Users, History } from 'lucide-react';
+import { decodeAudio, getChunkCount, getChunkCountForDuration, getAudioDuration, pcmChunkToWav, formatTime, generateSrtContent, TRANSCRIBE_SAMPLE_RATE } from './utils/audioUtils';
 import { transcribeChunk, MODEL_NAME, requestLog } from './services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
-import AutoResizeTextarea from './components/AutoResizeTextarea';
+import TranscriptRow from './components/TranscriptRow';
 import SpeakerPanel from './components/SpeakerPanel';
-import { saveProgress, loadProgress, clearProgress } from './utils/progressStorage';
+import { saveProgress, loadProgress, clearProgress, peekProgress } from './utils/progressStorage';
 import { parseGeminiError, parseAudioError, ErrorType } from './utils/errorHandling';
 import { saveSpeedHistory, loadSpeedHistory } from './utils/speedHistory';
 
@@ -17,6 +17,13 @@ const CHUNK_DURATION = 300;
 // 同時送出的片段上限。實測同時 8 段時每段反而變慢（Gemini 端排隊處理），總時間沒有縮短，因此設 3。
 // 遇到請求次數過多（429）時會自動減半，免費方案也不會一直失敗。
 const MAX_CONCURRENCY = 3;
+
+// 每一段逐字稿的穩定 id，讓列表在插入新段落、重新排序時不會把輸入框對錯段落。
+// id 會跟著進度保存，加上每次載入頁面不同的前綴，續傳時新舊段落的 id 才不會重複
+const segmentIdPrefix = Math.random().toString(36).slice(2, 8);
+let nextSegmentId = 0;
+const withId = (segment: TranscriptSegment): TranscriptSegment =>
+  segment.id ? segment : { ...segment, id: `seg-${segmentIdPrefix}-${nextSegmentId++}` };
 
 function App() {
   // State
@@ -36,6 +43,8 @@ function App() {
   const [fileDuration, setFileDuration] = useState<number | null>(null);
   const [showSpeakerPanel, setShowSpeakerPanel] = useState(false);
   const [copyNotice, setCopyNotice] = useState<string | null>(null);
+  // 上次未完成的轉錄（重新打開頁面時提醒使用者）
+  const [pendingProgress, setPendingProgress] = useState(() => peekProgress());
 
   // Refs
   // 每一輪轉錄各用一個 AbortController：停止後馬上重新開始，上一輪還沒結束的工作也不會混進新的一輪
@@ -78,6 +87,18 @@ function App() {
   const isBusy = status === AppStatus.PROCESSING || status === AppStatus.PREPARING;
   const failedCount = transcripts.filter(t => t.failedChunk !== undefined).length;
   const hasUnexported = transcripts.length > 0 && transcripts !== exportedTranscripts;
+  const pendingMatchesFile = !!(pendingProgress && file && pendingProgress.fileName === file.name && pendingProgress.fileSize === file.size);
+
+  // 狀態變化後（轉錄完成會清除進度、停止會留下進度）重新讀取
+  useEffect(() => {
+    if (!isBusy) setPendingProgress(peekProgress());
+  }, [isBusy, status]);
+
+  const discardPendingProgress = () => {
+    if (!window.confirm('確定要捨棄上次未完成的轉錄嗎？已完成的段落也會一起刪除。')) return;
+    clearProgress();
+    setPendingProgress(null);
+  };
 
   // 轉錄中、或有還沒下載的逐字稿時，關閉或重新整理頁面前先提醒
   useEffect(() => {
@@ -158,13 +179,17 @@ function App() {
     setTranscripts(prev => prev.map(t => t.speaker === from && t.failedChunk === undefined ? { ...t, speaker: to } : t));
   };
 
-  const updateTranscriptSegment = (index: number, field: keyof TranscriptSegment, value: string | number) => {
+  // 用 useCallback 保持同一個函式，逐字稿每一段（memo）才不會在打字時全部重繪
+  const updateTranscriptSegment = useCallback((index: number, field: keyof TranscriptSegment, value: string | number) => {
     setTranscripts(prev => {
       const newTranscripts = [...prev];
       newTranscripts[index] = { ...newTranscripts[index], [field]: value };
-      return newTranscripts;
+      // 改了時間就依時間重新排序，畫面順序和匯出一致
+      return field === 'startTimeSeconds'
+        ? newTranscripts.sort((a, b) => a.startTimeSeconds - b.startTimeSeconds)
+        : newTranscripts;
     });
-  };
+  }, []);
 
   // 轉錄結束後的摘要；詳細數據用來判斷時間花在解碼、等待 API，還是重試
   const buildPerfReport = (totalMs: number, decodeMs: number, minConcurrency: number, chunkCount: number) => {
@@ -229,7 +254,7 @@ function App() {
       
       if (shouldResume) {
         // 失敗片段的佔位段落拿掉，這些片段會重送
-        setTranscripts(savedProgress.transcripts.filter(t => t.failedChunk === undefined));
+        setTranscripts(savedProgress.transcripts.filter(t => t.failedChunk === undefined).map(withId));
         setStats({
           totalChunks: savedProgress.totalChunks,
           processedChunks: savedProgress.processedChunks,
@@ -298,7 +323,7 @@ function App() {
         setTranscripts(prev => {
           // 片段完成順序不固定，依時間排序後再顯示（sort 為穩定排序，同段內順序不變）；
           // 以 prev 為基礎，保留使用者在轉錄途中做的編輯
-          const updated = [...prev, ...segments].sort((a, b) => a.startTimeSeconds - b.startTimeSeconds);
+          const updated = [...prev, ...segments.map(withId)].sort((a, b) => a.startTimeSeconds - b.startTimeSeconds);
           if (!progressClosedRef.current) {
             saveProgress(file.name, file.size, updated, completedList, totalChunks);
           }
@@ -490,9 +515,9 @@ function App() {
         currentKey={apiKey}
       />
 
-      <header className="w-full max-w-4xl flex justify-between items-center mb-8">
+      <header className="w-full max-w-4xl flex justify-between items-center gap-3 mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-slate-800 tracking-tight flex items-center gap-3">
+          <h1 className="text-xl sm:text-3xl font-bold text-slate-800 tracking-tight flex items-center gap-2 sm:gap-3">
             <span className="bg-indigo-600 text-white p-2 rounded-lg">
               <FileAudio className="w-6 h-6" />
             </span>
@@ -502,7 +527,8 @@ function App() {
         </div>
         <button 
           onClick={() => setKeyModalOpen(true)}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg shadow-sm transition-colors ${
+          aria-label={apiKey ? `API Key 設定（目前金鑰結尾 ${apiKey.slice(-4)}）` : '設定 API Key'}
+          className={`shrink-0 whitespace-nowrap flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg shadow-sm transition-colors ${
             apiKey
               ? 'bg-white border border-slate-200 hover:bg-slate-50 text-slate-700'
               : 'bg-indigo-600 hover:bg-indigo-700 text-white'
@@ -510,7 +536,7 @@ function App() {
         >
           <Settings className="w-4 h-4" />
           {apiKey ? (
-            <span>API Key <span className="font-mono">…{apiKey.slice(-4)}</span></span>
+            <span><span className="hidden sm:inline">API Key </span><span className="font-mono">…{apiKey.slice(-4)}</span></span>
           ) : (
             <span>設定 API Key</span>
           )}
@@ -526,9 +552,37 @@ function App() {
                <Upload className="w-5 h-5 text-indigo-600" />
                上傳音訊檔案
              </h2>
+
+             {status === AppStatus.IDLE && pendingProgress && (
+               <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900 flex items-start gap-2">
+                 <History className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />
+                 {pendingMatchesFile ? (
+                   <p>這個檔案有上次未完成的轉錄（已完成 {pendingProgress.processedChunks} / {pendingProgress.totalChunks} 段），按「開始轉錄」可從中斷處繼續。</p>
+                 ) : (
+                   <div className="flex-grow">
+                     <p>
+                       有未完成的轉錄：<span className="font-medium break-all">{pendingProgress.fileName}</span>
+                       （已完成 {pendingProgress.processedChunks} / {pendingProgress.totalChunks} 段）。重新選擇這個檔案即可從中斷處繼續。
+                     </p>
+                     <button onClick={discardPendingProgress} className="mt-1 text-xs text-amber-700 underline hover:text-amber-900">
+                       捨棄這份進度
+                     </button>
+                   </div>
+                 )}
+               </div>
+             )}
              
              <div 
+               role="button"
+               tabIndex={isBusy ? -1 : 0}
+               aria-disabled={isBusy}
+               aria-label={file ? `已選擇 ${file.name}，按下可換成其他音檔` : '選擇音檔'}
                onClick={() => !isBusy && fileInputRef.current?.click()}
+               onKeyDown={(e) => {
+                 if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return;
+                 e.preventDefault();
+                 fileInputRef.current?.click();
+               }}
                onDragOver={(e) => {
                  e.preventDefault();
                  if (!isBusy) setIsDragging(true);
@@ -538,7 +592,7 @@ function App() {
                  if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragging(false);
                }}
                onDrop={handleDrop}
-               className={`border-2 border-dashed rounded-xl p-8 text-center transition-all ${
+               className={`border-2 border-dashed rounded-xl p-8 text-center transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 ${
                  isBusy ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
                } ${
                  isDragging ? 'border-indigo-500 bg-indigo-100'
@@ -611,10 +665,18 @@ function App() {
                         else if (confirmDiscard('重新轉錄', '，並重新使用 API 額度')) processAudio('restart');
                       }}
                       disabled={!file || !apiKey}
-                      className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-lg font-medium flex items-center gap-2 transition-colors shadow-sm"
+                      className={`px-6 py-2.5 rounded-lg font-medium flex items-center gap-2 transition-colors disabled:cursor-not-allowed ${
+                        // 完成後主要該做的是下載，重新轉錄會重花額度，改成次要樣式
+                        status === AppStatus.COMPLETED
+                          ? 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:text-slate-400'
+                          : 'bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white shadow-sm'
+                      }`}
                     >
-                      {status === AppStatus.COMPLETED ? '重新轉錄' : '開始轉錄'}
-                      <Play className="w-4 h-4 fill-current" />
+                      {status === AppStatus.COMPLETED ? (
+                        <>重新轉錄<RefreshCw className="w-4 h-4" /></>
+                      ) : (
+                        <>開始轉錄<Play className="w-4 h-4 fill-current" /></>
+                      )}
                     </button>
                   </>
                 )}
@@ -683,8 +745,9 @@ function App() {
 
         {/* Transcript Results */}
         {transcripts.length > 0 && (
-          <div className="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center sticky top-0 z-10 flex-wrap gap-3">
+          <div className="bg-white rounded-xl shadow-lg border border-slate-200">
+            {/* 工具列固定在畫面頂端，往下捲也能下載；整份逐字稿跟著頁面捲動，不再有第二層捲軸 */}
+            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 rounded-t-xl flex justify-between items-center sticky top-0 z-10 flex-wrap gap-3">
               <h3 className="font-bold text-slate-700 flex items-center gap-2">
                 <FileText className="w-5 h-5 text-indigo-600" />
                 逐字稿結果
@@ -737,56 +800,9 @@ function App() {
 
             {showSpeakerPanel && <SpeakerPanel speakers={speakers} onRename={renameSpeaker} />}
             
-            <div className="divide-y divide-slate-100 max-h-[600px] overflow-y-auto p-4 space-y-4">
+            <div className="divide-y divide-slate-100 p-4 space-y-4">
               {transcripts.map((segment, idx) => (
-                <div key={idx} className="flex gap-4 group items-start hover:bg-slate-50/50 transition-colors">
-                   <div className="flex-shrink-0 w-28 text-right pt-2">
-                      <div className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded border border-transparent focus-within:border-indigo-300 focus-within:bg-white focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
-                        <Clock className="w-3 h-3 text-slate-400" />
-                        <input
-                          key={segment.startTimeSeconds}
-                          type="text"
-                          defaultValue={formatTime(segment.startTimeSeconds)}
-                          onBlur={(e) => {
-                             const seconds = parseTimeStringToSeconds(e.target.value);
-                             if (seconds !== null) {
-                               updateTranscriptSegment(idx, 'startTimeSeconds', seconds);
-                               // Force re-render of formatted value if strictly needed, 
-                               // but normally we just need the model to update.
-                               e.target.value = formatTime(seconds);
-                             } else {
-                               e.target.value = formatTime(segment.startTimeSeconds); // Revert on fail
-                             }
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.currentTarget.blur();
-                            }
-                          }}
-                          className="w-14 bg-transparent text-xs font-mono text-slate-600 focus:outline-none text-center"
-                        />
-                      </div>
-                   </div>
-                   <div className="flex-grow min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <User className="w-3 h-3 text-slate-400" />
-                        <input 
-                          type="text"
-                          value={segment.speaker}
-                          onChange={(e) => updateTranscriptSegment(idx, 'speaker', e.target.value)}
-                          className="text-xs font-bold text-slate-600 uppercase tracking-wide bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-400 focus:outline-none transition-colors w-full max-w-[200px]"
-                          placeholder="說話者"
-                        />
-                      </div>
-                      <AutoResizeTextarea
-                        value={segment.text}
-                        onChange={(e) => updateTranscriptSegment(idx, 'text', e.target.value)}
-                        className={`w-full leading-relaxed bg-transparent border border-transparent hover:bg-white hover:border-slate-200 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 rounded p-2 -ml-2 focus:outline-none transition-colors resize-none overflow-hidden ${
-                          segment.failedChunk !== undefined ? 'text-amber-700' : 'text-slate-800'
-                        }`}
-                      />
-                   </div>
-                </div>
+                <TranscriptRow key={segment.id ?? idx} segment={segment} index={idx} onUpdate={updateTranscriptSegment} />
               ))}
               
               {isBusy && (
