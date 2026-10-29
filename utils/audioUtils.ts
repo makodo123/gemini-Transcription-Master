@@ -53,7 +53,11 @@ const MIN_TAIL_FRAMES = TRANSCRIBE_SAMPLE_RATE;
  * Returns how many chunks of the given duration the audio splits into.
  */
 export const getChunkCount = (pcm: Int16Array, chunkDurationSeconds: number): number =>
-  Math.max(1, Math.ceil((pcm.length - MIN_TAIL_FRAMES) / (chunkDurationSeconds * TRANSCRIBE_SAMPLE_RATE)));
+  getChunkCountForDuration(pcm.length / TRANSCRIBE_SAMPLE_RATE, chunkDurationSeconds);
+
+/** 依長度（秒）算出會切成幾段，規則與 getChunkCount 相同 */
+export const getChunkCountForDuration = (durationSeconds: number, chunkDurationSeconds: number): number =>
+  Math.max(1, Math.ceil((durationSeconds * TRANSCRIBE_SAMPLE_RATE - MIN_TAIL_FRAMES) / (chunkDurationSeconds * TRANSCRIBE_SAMPLE_RATE)));
 
 /**
  * Wraps one chunk of the decoded PCM in a WAV header.
@@ -101,6 +105,24 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
     reader.readAsDataURL(blob);
   });
 };
+
+/**
+ * 只讀取音檔的中繼資料取得長度（秒），不解碼整個檔案；瀏覽器無法讀取時回傳 null。
+ */
+export const getAudioDuration = (file: File): Promise<number | null> =>
+  new Promise(resolve => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    const done = (duration: number | null) => {
+      URL.revokeObjectURL(url);
+      audio.removeAttribute('src');
+      resolve(duration);
+    };
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => done(Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null);
+    audio.onerror = () => done(null);
+    audio.src = url;
+  });
 
 /**
  * Formats seconds into MM:SS or HH:MM:SS

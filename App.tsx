@@ -1,12 +1,14 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, Clock, User, FileOutput, FileDown, RefreshCw, CheckCircle2, Circle, Info } from 'lucide-react';
-import { decodeAudio, getChunkCount, pcmChunkToWav, formatTime, generateSrtContent, parseTimeStringToSeconds, TRANSCRIBE_SAMPLE_RATE } from './utils/audioUtils';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, Clock, User, FileOutput, FileDown, RefreshCw, CheckCircle2, Circle, Info, Copy, Check, Users } from 'lucide-react';
+import { decodeAudio, getChunkCount, getChunkCountForDuration, getAudioDuration, pcmChunkToWav, formatTime, generateSrtContent, parseTimeStringToSeconds, TRANSCRIBE_SAMPLE_RATE } from './utils/audioUtils';
 import { transcribeChunk, MODEL_NAME, requestLog } from './services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
 import AutoResizeTextarea from './components/AutoResizeTextarea';
+import SpeakerPanel from './components/SpeakerPanel';
 import { saveProgress, loadProgress, clearProgress } from './utils/progressStorage';
 import { parseGeminiError, parseAudioError, ErrorType } from './utils/errorHandling';
+import { saveSpeedHistory, loadSpeedHistory } from './utils/speedHistory';
 
 // Chunk duration in seconds.
 // 實測 Gemini 端的處理量有上限，片段切更短不會更快，反而多了斷句與講者編號不一致；維持 5 分鐘。
@@ -30,6 +32,10 @@ function App() {
   const [isDragging, setIsDragging] = useState(false);
   // 最後一次下載時的逐字稿；和目前的不同，代表有還沒下載的內容（新結果或修改）
   const [exportedTranscripts, setExportedTranscripts] = useState<TranscriptSegment[] | null>(null);
+  // 選檔後讀到的音檔長度（秒）；讀不到時為 null
+  const [fileDuration, setFileDuration] = useState<number | null>(null);
+  const [showSpeakerPanel, setShowSpeakerPanel] = useState(false);
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
 
   // Refs
   // 每一輪轉錄各用一個 AbortController：停止後馬上重新開始，上一輪還沒結束的工作也不會混進新的一輪
@@ -37,6 +43,8 @@ function App() {
   // 轉錄完成後設為 true，避免延後執行的 state 更新又把進度寫回 localStorage
   const progressClosedRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 最新選的檔案；讀長度期間又換檔時，舊檔的結果就不採用
+  const selectedFileRef = useRef<File | null>(null);
 
   // Load API Key from local storage or environment
   useEffect(() => {
@@ -49,6 +57,11 @@ function App() {
   const handleSaveKey = (key: string) => {
     setApiKey(key);
     localStorage.setItem('gemini_api_key', key);
+  };
+
+  const handleClearKey = () => {
+    setApiKey('');
+    localStorage.removeItem('gemini_api_key');
   };
 
   // 檔案沒拖進上傳區就放開時，瀏覽器預設會直接開啟該檔案、離開本頁，先擋掉
@@ -89,7 +102,25 @@ function App() {
     setTranscripts([]);
     setErrorMsg(null);
     setPerfReport(null);
+    setShowSpeakerPanel(false);
+    setFileDuration(null);
+    selectedFileRef.current = selected;
+    getAudioDuration(selected).then(duration => {
+      if (selectedFileRef.current === selected) setFileDuration(duration);
+    });
   };
+
+  // 選檔後的長度、段數與預估時間；預估依這台裝置上次的轉錄速度
+  const fileEstimate = useMemo(() => {
+    if (fileDuration === null) return null;
+    const chunks = getChunkCountForDuration(fileDuration, CHUNK_DURATION);
+    const history = loadSpeedHistory();
+    const seconds = history
+      ? fileDuration * history.decodeSecondsPerAudioSecond + Math.ceil(chunks / MAX_CONCURRENCY) * history.secondsPerChunk
+      : null;
+    return { chunks, seconds };
+    // status 變化時重算：轉錄完成後速度紀錄會更新
+  }, [fileDuration, status]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -112,6 +143,19 @@ function App() {
     abortControllerRef.current?.abort();
     setStatus(AppStatus.STOPPED);
     setStats(prev => ({ ...prev, currentAction: '已停止。已完成的段落都已保存，按「開始轉錄」可從中斷處繼續' }));
+  };
+
+  // 依出現順序列出講者與段數（不含轉錄失敗的佔位段落）
+  const speakers = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const t of transcripts) {
+      if (t.failedChunk === undefined) counts.set(t.speaker, (counts.get(t.speaker) ?? 0) + 1);
+    }
+    return [...counts].map(([name, count]) => ({ name, count }));
+  }, [transcripts]);
+
+  const renameSpeaker = (from: string, to: string) => {
+    setTranscripts(prev => prev.map(t => t.speaker === from && t.failedChunk === undefined ? { ...t, speaker: to } : t));
   };
 
   const updateTranscriptSegment = (index: number, field: keyof TranscriptSegment, value: string | number) => {
@@ -355,6 +399,13 @@ function App() {
 
       setStatus(AppStatus.COMPLETED);
       setPerfReport(buildPerfReport(performance.now() - runStartedAt, decodeMs, minConcurrency, chunksThisRun));
+      const okRequests = requestLog.filter(r => r.ok);
+      if (okRequests.length > 0) {
+        saveSpeedHistory({
+          secondsPerChunk: okRequests.reduce((sum, r) => sum + r.ms, 0) / okRequests.length / 1000,
+          decodeSecondsPerAudioSecond: decodeMs / 1000 / (pcm.length / TRANSCRIBE_SAMPLE_RATE),
+        });
+      }
       if (failed.size > 0) {
         // 保留進度，重新整理頁面後也能只重送失敗的片段
         setStats(prev => ({ ...prev, currentAction: `完成，但有 ${failed.size} 段轉錄失敗` }));
@@ -395,12 +446,37 @@ function App() {
     setExportedTranscripts(transcripts);
   };
 
-  const downloadTxt = () => downloadFile('txt', segments => segments
+  const toPlainText = (segments: TranscriptSegment[]) => segments
     .map(t => {
       const timeStr = includeTimestamps ? `[${formatTime(t.startTimeSeconds)}] ` : '';
       return `${timeStr}${t.speaker}: ${t.text}`;
     })
-    .join('\n'));
+    .join('\n');
+
+  const downloadTxt = () => downloadFile('txt', toPlainText);
+
+  const copyAll = async () => {
+    const text = toPlainText(transcripts.filter(t => t.failedChunk === undefined));
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // 不支援 Clipboard API（例如非 HTTPS）時改用舊方法
+      const area = document.createElement('textarea');
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      const copied = document.execCommand('copy');
+      area.remove();
+      if (!copied) {
+        setCopyNotice('無法複製，請改用「下載 TXT」');
+        setTimeout(() => setCopyNotice(null), 3000);
+        return;
+      }
+    }
+    setExportedTranscripts(transcripts);
+    setCopyNotice(failedCount > 0 ? `已複製（略過 ${failedCount} 段轉錄失敗）` : '已複製');
+    setTimeout(() => setCopyNotice(null), 2500);
+  };
 
   const downloadSrt = () => downloadFile('srt', generateSrtContent);
 
@@ -410,6 +486,7 @@ function App() {
         isOpen={isKeyModalOpen} 
         onClose={() => setKeyModalOpen(false)} 
         onSave={handleSaveKey}
+        onClear={handleClearKey}
         currentKey={apiKey}
       />
 
@@ -481,7 +558,17 @@ function App() {
                  <div className="text-indigo-700 font-medium flex flex-col items-center">
                    <FileAudio className="w-10 h-10 mb-2" />
                    {file.name}
-                   <span className="text-xs text-indigo-500 mt-1">{(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                   <span className="text-xs text-indigo-500 mt-1">
+                     {(file.size / 1024 / 1024).toFixed(1)} MB
+                     {fileDuration !== null && fileEstimate && <>・長度 {formatTime(fileDuration)}・會分成 {fileEstimate.chunks} 段</>}
+                   </span>
+                   {fileEstimate && (
+                     <span className="text-xs text-slate-500 font-normal mt-1">
+                       {fileEstimate.seconds === null
+                         ? '第一次轉錄完成後，這裡會依您的轉錄速度顯示預估時間'
+                         : `預估需要${fileEstimate.seconds < 60 ? '不到 1 分鐘' : `約 ${Math.round(fileEstimate.seconds / 60)} 分鐘`}（依您上次在這台裝置的轉錄速度估算）`}
+                     </span>
+                   )}
                  </div>
                ) : (
                  <div className="text-slate-500 flex flex-col items-center">
@@ -597,12 +684,30 @@ function App() {
         {/* Transcript Results */}
         {transcripts.length > 0 && (
           <div className="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center sticky top-0 z-10 flex-wrap gap-2">
+            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center sticky top-0 z-10 flex-wrap gap-3">
               <h3 className="font-bold text-slate-700 flex items-center gap-2">
                 <FileText className="w-5 h-5 text-indigo-600" />
                 逐字稿結果
               </h3>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 flex-wrap justify-end">
+                <button
+                  onClick={() => setShowSpeakerPanel(v => !v)}
+                  aria-expanded={showSpeakerPanel}
+                  className={`text-xs sm:text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 ${
+                    showSpeakerPanel ? 'bg-indigo-100 text-indigo-800' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Users className="w-4 h-4" />
+                  重新命名講者
+                </button>
+                <button
+                  onClick={copyAll}
+                  className="text-xs sm:text-sm text-slate-600 hover:bg-slate-100 font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1"
+                >
+                  {copyNotice ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
+                  {copyNotice ?? '複製全文'}
+                </button>
+                <div className="h-5 w-px bg-slate-200 mx-1"></div>
                 <label className="flex items-center gap-1.5 text-xs sm:text-sm text-slate-600 cursor-pointer select-none hover:text-slate-900 transition-colors">
                   <input 
                     type="checkbox" 
@@ -610,7 +715,7 @@ function App() {
                     onChange={(e) => setIncludeTimestamps(e.target.checked)}
                     className="accent-indigo-600 w-4 h-4 rounded border-slate-300 focus:ring-indigo-500"
                   />
-                  <span>TXT 含時間戳記</span>
+                  <span>TXT 與複製含時間戳記</span>
                 </label>
                 <div className="h-5 w-px bg-slate-200 mx-1"></div>
                 <button 
@@ -629,6 +734,8 @@ function App() {
                 </button>
               </div>
             </div>
+
+            {showSpeakerPanel && <SpeakerPanel speakers={speakers} onRename={renameSpeaker} />}
             
             <div className="divide-y divide-slate-100 max-h-[600px] overflow-y-auto p-4 space-y-4">
               {transcripts.map((segment, idx) => (
