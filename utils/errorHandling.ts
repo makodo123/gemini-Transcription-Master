@@ -46,7 +46,7 @@ export const parseGeminiError = (error: any): AppError => {
     return new AppError(
       ErrorType.INVALID_API_KEY,
       errorMessage,
-      'API 金鑰無效或已過期，請檢查您的設定',
+      'API 金鑰無效或已過期',
       false
     );
   }
@@ -56,7 +56,7 @@ export const parseGeminiError = (error: any): AppError => {
     return new AppError(
       ErrorType.QUOTA_EXCEEDED,
       errorMessage,
-      '已達到 API 使用配額限制，請稍後再試',
+      '已達到 Gemini API 的使用額度上限',
       true
     );
   }
@@ -71,11 +71,25 @@ export const parseGeminiError = (error: any): AppError => {
     );
   }
 
-  // 默認為 API 錯誤
+  // 以下都顯示白話說明，不把原始錯誤內容（常是一整段 JSON）秀給使用者；原文留在 message 供除錯
+  if (/\b50[03]\b|INTERNAL|UNAVAILABLE|overloaded/i.test(errorMessage)) {
+    return new AppError(ErrorType.API_ERROR, errorMessage, 'Gemini 伺服器暫時忙碌或發生問題', true);
+  }
+
+  if (/\b504\b|DEADLINE_EXCEEDED|timed? ?out/i.test(errorMessage)) {
+    return new AppError(ErrorType.API_ERROR, errorMessage, 'Gemini 回應逾時', true);
+  }
+
+  if (/No response from Gemini|invalid JSON/i.test(errorMessage)) {
+    return new AppError(ErrorType.API_ERROR, errorMessage, 'Gemini 沒有回傳可用的逐字稿內容', true);
+  }
+
+  // 默認為 API 錯誤，只附上錯誤代碼
+  const code = errorMessage.match(/"code"\s*:\s*(\d{3})/)?.[1] ?? errorMessage.match(/\b([45]\d\d)\b/)?.[1];
   return new AppError(
     ErrorType.API_ERROR,
     errorMessage,
-    `API 請求失敗：${errorMessage}`,
+    `Gemini 回傳了錯誤${code ? `（錯誤代碼 ${code}）` : ''}`,
     true
   );
 };
@@ -87,7 +101,7 @@ export const parseAudioError = (error: any): AppError => {
   return new AppError(
     ErrorType.AUDIO_DECODE_ERROR,
     error?.message || error?.toString() || '',
-    '音訊檔案格式不支援或已損壞，請上傳有效的音訊檔案',
+    '無法讀取這個音檔，可能是格式不支援或檔案已損壞。建議改用 MP3、M4A 或 WAV 再試一次',
     false
   );
 };

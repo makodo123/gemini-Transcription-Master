@@ -40,7 +40,7 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, curr
         
         <div className="p-6">
           <p className="text-slate-600 text-sm mb-4">
-            請輸入您的 Google Gemini API Key。此金鑰僅會儲存於您的瀏覽器 LocalStorage 中，不會傳送至其他伺服器。
+            請輸入您的 Google Gemini API Key。金鑰只會存在這台裝置的瀏覽器裡，只用來呼叫 Google Gemini 轉錄，不會傳到其他地方。
             <br />
             <a 
               href="https://aistudio.google.com/app/apikey" 

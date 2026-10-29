@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, Clock, User, FileOutput, FileDown, RefreshCw } from 'lucide-react';
-import { decodeAudio, getChunkCount, pcmChunkToWav, formatTime, generateSrtContent, parseTimeStringToSeconds } from './utils/audioUtils';
+import { Upload, FileAudio, Play, Loader2, StopCircle, Settings, FileText, Clock, User, FileOutput, FileDown, RefreshCw, CheckCircle2, Circle, Info } from 'lucide-react';
+import { decodeAudio, getChunkCount, pcmChunkToWav, formatTime, generateSrtContent, parseTimeStringToSeconds, TRANSCRIBE_SAMPLE_RATE } from './utils/audioUtils';
 import { transcribeChunk, MODEL_NAME, requestLog } from './services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
+import AutoResizeTextarea from './components/AutoResizeTextarea';
 import { saveProgress, loadProgress, clearProgress } from './utils/progressStorage';
 import { parseGeminiError, parseAudioError, ErrorType } from './utils/errorHandling';
 
@@ -24,9 +25,11 @@ function App() {
   const [stats, setStats] = useState<ProcessingStats>({ totalChunks: 0, processedChunks: 0, currentAction: '' });
   const [transcripts, setTranscripts] = useState<TranscriptSegment[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [perfReport, setPerfReport] = useState<string | null>(null);
+  const [perfReport, setPerfReport] = useState<{ summary: string; details: string } | null>(null);
   const [includeTimestamps, setIncludeTimestamps] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
+  // 最後一次下載時的逐字稿；和目前的不同，代表有還沒下載的內容（新結果或修改）
+  const [exportedTranscripts, setExportedTranscripts] = useState<TranscriptSegment[] | null>(null);
 
   // Refs
   // 每一輪轉錄各用一個 AbortController：停止後馬上重新開始，上一輪還沒結束的工作也不會混進新的一輪
@@ -61,18 +64,39 @@ function App() {
 
   const isBusy = status === AppStatus.PROCESSING || status === AppStatus.PREPARING;
   const failedCount = transcripts.filter(t => t.failedChunk !== undefined).length;
+  const hasUnexported = transcripts.length > 0 && transcripts !== exportedTranscripts;
+
+  // 轉錄中、或有還沒下載的逐字稿時，關閉或重新整理頁面前先提醒
+  useEffect(() => {
+    if (!isBusy && !hasUnexported) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [isBusy, hasUnexported]);
+
+  /** 會清掉目前逐字稿的動作先確認；已下載且沒再修改就不用問 */
+  const confirmDiscard = (action: string, extra = '') =>
+    !hasUnexported ||
+    window.confirm(`${action}會清除目前的逐字稿${extra}。\n\n這份逐字稿還沒下載，您做的修改也會一起消失。確定要繼續嗎？`);
 
   const selectFile = (selected: File) => {
+    if (!confirmDiscard('換成新的檔案')) return;
     setFile(selected);
     setStatus(AppStatus.IDLE);
     setTranscripts([]);
     setErrorMsg(null);
+    setPerfReport(null);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       selectFile(e.target.files[0]);
     }
+    // 清空選取，再選同一個檔案時也會觸發
+    e.target.value = '';
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -87,7 +111,7 @@ function App() {
   const stopProcessing = () => {
     abortControllerRef.current?.abort();
     setStatus(AppStatus.STOPPED);
-    setStats(prev => ({ ...prev, currentAction: '已停止，已完成的片段已保存' }));
+    setStats(prev => ({ ...prev, currentAction: '已停止。已完成的段落都已保存，按「開始轉錄」可從中斷處繼續' }));
   };
 
   const updateTranscriptSegment = (index: number, field: keyof TranscriptSegment, value: string | number) => {
@@ -98,8 +122,8 @@ function App() {
     });
   };
 
-  // 轉錄結束後的效能摘要：用來判斷時間花在解碼、等待 API，還是重試
-  const buildPerfReport = (totalMs: number, decodeMs: number, minConcurrency: number): string => {
+  // 轉錄結束後的摘要；詳細數據用來判斷時間花在解碼、等待 API，還是重試
+  const buildPerfReport = (totalMs: number, decodeMs: number, minConcurrency: number, chunkCount: number) => {
     const ok = requestLog.filter(r => r.ok);
     const failed = requestLog.filter(r => !r.ok);
     const rateLimited = failed.filter(r => /429|quota|rate|RESOURCE_EXHAUSTED/i.test(r.error || ''));
@@ -107,8 +131,10 @@ function App() {
     const times = ok.map(r => r.ms);
     const avg = times.length ? times.reduce((a, b) => a + b, 0) / times.length : 0;
     console.table(requestLog);
-    return [
-      `總耗時 ${secs(totalMs)} 秒（解碼音檔 ${secs(decodeMs)} 秒）`,
+    const summary = `這次轉錄了 ${chunkCount} 段（每段 ${CHUNK_DURATION / 60} 分鐘），共花 ${secs(totalMs)} 秒`;
+    const details = [
+      `模型：${MODEL_NAME}`,
+      `總耗時 ${secs(totalMs)} 秒（讀取音檔 ${secs(decodeMs)} 秒）`,
       `API 請求 ${requestLog.length} 次：成功 ${ok.length}、失敗 ${failed.length}（其中請求次數過多 ${rateLimited.length} 次）`,
       times.length ? `單段請求耗時：平均 ${secs(avg)} 秒，最短 ${secs(Math.min(...times))} 秒，最長 ${secs(Math.max(...times))} 秒` : '',
       ok.length ? `每段 ${CHUNK_DURATION / 60} 分鐘、上傳約 ${ok[0].uploadMB} MB` : '',
@@ -120,10 +146,12 @@ function App() {
         : `同時數：${MAX_CONCURRENCY}`,
       failed.length ? `第一個失敗原因：${failed[0].error}` : '',
     ].filter(Boolean).join('\n');
+    return { summary, details };
   };
 
-  // retryFailed：只重送失敗的片段，沿用畫面上（可能已編輯過）的逐字稿
-  const processAudio = async (retryFailed = false) => {
+  // start：開始（有未完成進度時詢問是否續傳）；retryFailed：只重送失敗的段落，沿用畫面上（可能已編輯過）的逐字稿；
+  // restart：捨棄目前結果與進度，整個重新轉錄
+  const processAudio = async (mode: 'start' | 'retryFailed' | 'restart' = 'start') => {
     if (!file || !apiKey) return;
     
     const controller = new AbortController();
@@ -140,17 +168,19 @@ function App() {
     setStatus(AppStatus.PREPARING);
     setErrorMsg(null);
     
-    const retryChunks = retryFailed
+    const retryChunks = mode === 'retryFailed'
       ? new Set(transcripts.flatMap(t => t.failedChunk !== undefined ? [t.failedChunk] : []))
       : null;
+    if (mode === 'restart') clearProgress();
 
     // 检查是否有保存的进度
-    let savedProgress = retryChunks ? null : loadProgress(file.name, file.size);
+    let savedProgress = mode === 'start' ? loadProgress(file.name, file.size) : null;
     if (retryChunks) {
       setTranscripts(prev => prev.filter(t => t.failedChunk === undefined));
     } else if (savedProgress && savedProgress.transcripts.length > 0) {
       const shouldResume = window.confirm(
-        `找到未完成的轉錄進度 (${savedProgress.processedChunks}/${savedProgress.totalChunks} 個片段已完成)。是否要繼續？`
+        `這個檔案有上次未完成的轉錄（已完成 ${savedProgress.processedChunks} / ${savedProgress.totalChunks} 段）。\n\n` +
+        `按「確定」：從中斷處繼續\n按「取消」：捨棄先前的進度，從頭開始`
       );
       
       if (shouldResume) {
@@ -159,7 +189,7 @@ function App() {
         setStats({
           totalChunks: savedProgress.totalChunks,
           processedChunks: savedProgress.processedChunks,
-          currentAction: '從上次進度繼續...'
+          currentAction: '從上次中斷處繼續...'
         });
       } else {
         clearProgress();
@@ -172,7 +202,7 @@ function App() {
     
     try {
       // 1. Decode
-      setStats({ totalChunks: 0, processedChunks: 0, currentAction: '正在解碼音訊檔案 (這可能需要一點時間)...' });
+      setStats({ totalChunks: 0, processedChunks: 0, currentAction: '正在讀取音檔...' });
       const decodeStartedAt = performance.now();
       let decodePercent = -1;
       const pcm = await decodeAudio(file, {
@@ -181,7 +211,7 @@ function App() {
           const percent = Math.floor(fraction * 100);
           if (percent === decodePercent || signal.aborted) return;
           decodePercent = percent;
-          setStats({ totalChunks: 0, processedChunks: 0, currentAction: `正在解碼音訊檔案 ${percent}%...` });
+          setStats({ totalChunks: 0, processedChunks: 0, currentAction: `正在讀取音檔 ${percent}%...` });
         }
       });
       decodeMs = performance.now() - decodeStartedAt;
@@ -201,6 +231,7 @@ function App() {
       const failed = new Set<number>();
       if (!resuming && !retryChunks) setTranscripts([]);
       const queue = allChunks.filter(i => !completed.has(i));
+      const chunksThisRun = queue.length;
       let inFlight = 0;
 
       const updateStats = () => {
@@ -208,7 +239,7 @@ function App() {
         setStats({
           totalChunks,
           processedChunks: completed.size + failed.size,
-          currentAction: `正在同時轉錄 ${inFlight} 個片段（已完成 ${completed.size} / ${totalChunks}）...`
+          currentAction: `轉錄中：已完成 ${completed.size} / ${totalChunks} 段（同時處理 ${inFlight} 段）`
         });
       };
 
@@ -280,18 +311,24 @@ function App() {
             const appError = parseGeminiError(err);
 
             // API Key 無效、或重試後仍超過配額：後面的片段也只會失敗，整輪暫停
-            if (appError.type === ErrorType.INVALID_API_KEY || appError.type === ErrorType.QUOTA_EXCEEDED) {
-              fatalError = appError.userMessage;
+            if (appError.type === ErrorType.INVALID_API_KEY) {
+              fatalError = `${appError.userMessage}。請按右上角的「API Key」重新輸入，再按「開始轉錄」從中斷處繼續；已完成的段落都已保存。`;
+              controller.abort();
+              return;
+            }
+            if (appError.type === ErrorType.QUOTA_EXCEEDED) {
+              fatalError = `${appError.userMessage}。已完成的段落都已保存，請稍後或換一組 API Key，再按「開始轉錄」從中斷處繼續。`;
               controller.abort();
               return;
             }
 
             // 添加错误标记到转录结果
+            const chunkEnd = i === totalChunks - 1 ? pcm.length / TRANSCRIBE_SAMPLE_RATE : (i + 1) * CHUNK_DURATION;
             addSegments([{
-              speaker: 'System',
+              speaker: '系統',
               timestamp: 'Error',
               startTimeSeconds: startTimeOffset,
-              text: `[轉錄此片段時發生錯誤 (${i + 1}): ${appError.userMessage}]`,
+              text: `[第 ${i + 1} 段（${formatTime(startTimeOffset)}–${formatTime(chunkEnd)}）轉錄失敗：${appError.userMessage}。請按上方的「重試」按鈕重新轉錄。]`,
               failedChunk: i
             }], i);
           } finally {
@@ -307,7 +344,7 @@ function App() {
       if (abortControllerRef.current !== controller) return;
 
       if (fatalError) {
-        setErrorMsg(`${fatalError}。已完成的片段已保存，處理後再按「開始辨識」即可從中斷處繼續。`);
+        setErrorMsg(fatalError);
         setStats(prev => ({ ...prev, currentAction: '已暫停' }));
         setStatus(AppStatus.ERROR);
         return;
@@ -317,10 +354,10 @@ function App() {
       if (signal.aborted) return;
 
       setStatus(AppStatus.COMPLETED);
-      setPerfReport(buildPerfReport(performance.now() - runStartedAt, decodeMs, minConcurrency));
+      setPerfReport(buildPerfReport(performance.now() - runStartedAt, decodeMs, minConcurrency, chunksThisRun));
       if (failed.size > 0) {
         // 保留進度，重新整理頁面後也能只重送失敗的片段
-        setStats(prev => ({ ...prev, currentAction: `完成，但有 ${failed.size} 個片段失敗` }));
+        setStats(prev => ({ ...prev, currentAction: `完成，但有 ${failed.size} 段轉錄失敗` }));
       } else {
         setStats(prev => ({ ...prev, currentAction: '完成！' }));
         // 完成后清除保存的进度
@@ -344,32 +381,28 @@ function App() {
     return lastDot === -1 ? name : name.substring(0, lastDot);
   };
 
-  const downloadTxt = () => {
-    const content = transcripts
-      .map(t => {
-        const timeStr = includeTimestamps ? `[${formatTime(t.startTimeSeconds)}] ` : '';
-        return `${timeStr}${t.speaker}: ${t.text}`;
-      })
-      .join('\n');
-    const blob = new Blob([content], { type: 'text/plain' });
+  // 下載時略過轉錄失敗的佔位段落；還有失敗的段落時先提醒
+  const downloadFile = (extension: string, build: (segments: TranscriptSegment[]) => string) => {
+    if (failedCount > 0 && !window.confirm(`還有 ${failedCount} 段轉錄失敗，下載的檔案會缺少這些段落。\n\n仍要下載嗎？`)) return;
+    const content = build(transcripts.filter(t => t.failedChunk === undefined));
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${getBaseFileName()}.txt`;
+    a.download = `${getBaseFileName()}.${extension}`;
     a.click();
     URL.revokeObjectURL(url);
+    setExportedTranscripts(transcripts);
   };
 
-  const downloadSrt = () => {
-    const content = generateSrtContent(transcripts);
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${getBaseFileName()}.srt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  const downloadTxt = () => downloadFile('txt', segments => segments
+    .map(t => {
+      const timeStr = includeTimestamps ? `[${formatTime(t.startTimeSeconds)}] ` : '';
+      return `${timeStr}${t.speaker}: ${t.text}`;
+    })
+    .join('\n'));
+
+  const downloadSrt = () => downloadFile('srt', generateSrtContent);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col items-center py-10 px-4 sm:px-6">
@@ -388,13 +421,7 @@ function App() {
             </span>
             Gemini 逐字稿大師
           </h1>
-          <div className="text-slate-500 mt-2 flex flex-col sm:flex-row sm:items-center gap-2">
-            <span>使用 Gemini 3 Flash 模型進行長音檔分割與精確轉錄</span>
-            <span className="hidden sm:inline text-slate-300">|</span>
-            <span className="text-xs bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full font-mono">
-              Model: {MODEL_NAME}
-            </span>
-          </div>
+          <p className="text-slate-500 mt-2">上傳錄音，自動產生逐字稿與 SRT 字幕檔</p>
         </div>
         <button 
           onClick={() => setKeyModalOpen(true)}
@@ -459,10 +486,16 @@ function App() {
                ) : (
                  <div className="text-slate-500 flex flex-col items-center">
                    <Upload className="w-10 h-10 mb-2 text-slate-300" />
-                   <span>點擊或拖曳上傳音檔 (MP3, WAV, M4A)</span>
+                   <span>點擊選擇，或把音檔拖曳到這裡</span>
+                   <span className="text-xs text-slate-400 mt-1">支援 MP3、M4A、WAV 等常見格式</span>
                  </div>
                )}
              </div>
+
+             <p className="mt-3 text-xs text-slate-400 flex items-start gap-1.5">
+               <Info className="w-3.5 h-3.5 mt-px shrink-0" />
+               音訊會在您的瀏覽器中切成每 {CHUNK_DURATION / 60} 分鐘一段，直接傳送給 Google Gemini 轉錄。
+             </p>
 
              <div className="mt-6 flex justify-end gap-3">
                 {isBusy ? (
@@ -471,13 +504,13 @@ function App() {
                     className="px-6 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium flex items-center gap-2 transition-colors shadow-sm"
                   >
                     <StopCircle className="w-5 h-5" />
-                    停止辨識
+                    停止轉錄
                   </button>
                 ) : (
                   <>
                     {status === AppStatus.COMPLETED && failedCount > 0 && (
                       <button 
-                        onClick={() => processAudio(true)}
+                        onClick={() => processAudio('retryFailed')}
                         disabled={!file || !apiKey}
                         className="px-6 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-lg font-medium flex items-center gap-2 transition-colors shadow-sm"
                       >
@@ -486,11 +519,14 @@ function App() {
                       </button>
                     )}
                     <button 
-                      onClick={() => processAudio()}
+                      onClick={() => {
+                        if (status !== AppStatus.COMPLETED) processAudio('start');
+                        else if (confirmDiscard('重新轉錄', '，並重新使用 API 額度')) processAudio('restart');
+                      }}
                       disabled={!file || !apiKey}
                       className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-lg font-medium flex items-center gap-2 transition-colors shadow-sm"
                     >
-                      {status === AppStatus.COMPLETED ? '重新辨識' : '開始辨識'}
+                      {status === AppStatus.COMPLETED ? '重新轉錄' : '開始轉錄'}
                       <Play className="w-4 h-4 fill-current" />
                     </button>
                   </>
@@ -499,6 +535,27 @@ function App() {
           </div>
 
           <div className="md:col-span-1">
+             {/* 使用步驟：還沒開始時告訴使用者下一步 */}
+             {status === AppStatus.IDLE && (
+               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                 <h3 className="font-medium text-slate-700 mb-3">使用步驟</h3>
+                 <ol className="space-y-2 text-sm">
+                   {[
+                     { done: !!apiKey, label: '設定 Gemini API Key（右上角）' },
+                     { done: !!file, label: '選擇或拖曳音檔' },
+                     { done: false, label: '按「開始轉錄」' },
+                   ].map((step, i) => (
+                     <li key={i} className={`flex items-center gap-2 ${step.done ? 'text-slate-400 line-through' : 'text-slate-700'}`}>
+                       {step.done
+                         ? <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+                         : <Circle className="w-4 h-4 text-slate-300 shrink-0" />}
+                       {step.label}
+                     </li>
+                   ))}
+                 </ol>
+               </div>
+             )}
+
              {/* Progress Status Card */}
              {status !== AppStatus.IDLE && (
                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
@@ -524,7 +581,13 @@ function App() {
                    <p className="text-xs text-red-500 mt-2">{errorMsg}</p>
                  )}
                  {perfReport && (
-                   <pre className="text-xs text-slate-500 mt-3 whitespace-pre-wrap bg-slate-50 rounded p-2">{perfReport}</pre>
+                   <div className="mt-3 text-sm text-slate-600">
+                     <p>{perfReport.summary}</p>
+                     <details className="mt-2">
+                       <summary className="text-xs text-slate-400 cursor-pointer select-none">詳細資訊</summary>
+                       <pre className="text-xs text-slate-500 mt-2 whitespace-pre-wrap bg-slate-50 rounded p-2">{perfReport.details}</pre>
+                     </details>
+                   </div>
                  )}
                </div>
              )}
@@ -547,7 +610,7 @@ function App() {
                     onChange={(e) => setIncludeTimestamps(e.target.checked)}
                     className="accent-indigo-600 w-4 h-4 rounded border-slate-300 focus:ring-indigo-500"
                   />
-                  <span>包含時間戳記</span>
+                  <span>TXT 含時間戳記</span>
                 </label>
                 <div className="h-5 w-px bg-slate-200 mx-1"></div>
                 <button 
@@ -555,14 +618,14 @@ function App() {
                   className="text-xs sm:text-sm text-indigo-600 hover:text-indigo-800 font-medium px-3 py-1.5 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors flex items-center gap-1"
                 >
                   <FileDown className="w-4 h-4" />
-                  下載 .txt
+                  下載 TXT
                 </button>
                 <button 
                   onClick={downloadSrt}
                   className="text-xs sm:text-sm text-white hover:bg-indigo-700 font-medium px-3 py-1.5 bg-indigo-600 rounded-lg transition-colors flex items-center gap-1 shadow-sm"
                 >
                   <FileOutput className="w-4 h-4" />
-                  匯出 SRT
+                  下載 SRT 字幕
                 </button>
               </div>
             </div>
@@ -608,10 +671,12 @@ function App() {
                           placeholder="說話者"
                         />
                       </div>
-                      <textarea
+                      <AutoResizeTextarea
                         value={segment.text}
                         onChange={(e) => updateTranscriptSegment(idx, 'text', e.target.value)}
-                        className="w-full text-slate-800 leading-relaxed bg-transparent border border-transparent hover:bg-white hover:border-slate-200 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 rounded p-2 -ml-2 focus:outline-none transition-all resize-y min-h-[60px]"
+                        className={`w-full leading-relaxed bg-transparent border border-transparent hover:bg-white hover:border-slate-200 focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 rounded p-2 -ml-2 focus:outline-none transition-colors resize-none overflow-hidden ${
+                          segment.failedChunk !== undefined ? 'text-amber-700' : 'text-slate-800'
+                        }`}
                       />
                    </div>
                 </div>
