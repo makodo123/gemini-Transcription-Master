@@ -64,6 +64,21 @@ npm run dev       # 開發伺服器 http://localhost:3000/gemini-Transcription-M
 npm run build     # 建置到 dist/
 ```
 
+### 測試
+
+```bash
+npm run typecheck # TypeScript 型別檢查
+npm test          # 單元測試（Vitest，tests/unit）
+npm run test:e2e  # 端到端測試（Playwright，tests/e2e）
+```
+
+- 單元測試涵蓋時間解析、SRT 產生、錯誤訊息、分段解碼（WAV 讀取、MP3／M4A 音框解析）、進度保存、API 重試邏輯與幾個元件。
+- 端到端測試在真實的 Chromium 裡操作建置後的網站，Gemini API 用假的回應代替，不需要 API Key。第一次執行前先 `npx playwright install chromium`。
+- 沒有網路時，Tailwind 無法從 CDN 載入：可以設定 `TAILWIND_BROWSER_JS` 指向 `@tailwindcss/browser` 的 `dist/index.global.js` 代替。
+- 每次 push 和 PR，GitHub Actions 會自動跑上面三項（`.github/workflows/test.yml`）。
+
+### 部署
+
 網站部署在 GitHub Pages，來源是 `gh-pages` 分支：
 
 ```bash
