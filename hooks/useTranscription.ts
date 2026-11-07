@@ -118,6 +118,15 @@ export const useTranscription = (file: File | null, apiKey: string) => {
     setUndoStack(stack => [...stack.slice(-(MAX_UNDO - 1)), { kind: 'delete', segment, label: `已刪除「${preview(segment.text)}」` }]);
   }, []);
 
+  /** 打開自動保存的逐字稿 */
+  const restore = (segments: TranscriptSegment[]) => {
+    setTranscripts(segments.map(withId));
+    setStatus(AppStatus.IDLE);
+    setErrorMsg(null);
+    setPerfReport(null);
+    setUndoStack([]);
+  };
+
   /** 復原最近一次刪除或改名；之後做的其他修改保留 */
   const undo = () => {
     const entry = undoStack[undoStack.length - 1];
@@ -388,6 +397,6 @@ export const useTranscription = (file: File | null, apiKey: string) => {
   return {
     status, isBusy, stats, transcripts, errorMsg, perfReport, failedCount, speakers,
     lastUndo: undoStack[undoStack.length - 1] ?? null,
-    start, stop, reset, updateSegment, renameSpeaker, deleteSegment, undo,
+    start, stop, reset, restore, updateSegment, renameSpeaker, deleteSegment, undo,
   };
 };

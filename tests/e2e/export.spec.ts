@@ -96,3 +96,34 @@ test.describe('防止誤刪還沒下載的逐字稿', () => {
     expect(dialogs.messages.length).toBe(asked);
   });
 });
+
+test.describe('自動保存', () => {
+  test.beforeEach(({ dialogs }) => { dialogs.allowLeave = true; });
+  test('重新打開頁面可以找回上次的逐字稿，選回同一個音檔就能邊聽邊校對', async ({ page, openApp }) => {
+    await openApp();
+    await transcribe(page);
+    await page.locator('textarea').first().fill('改過還沒下載的內容');
+    await page.waitForTimeout(1500); // 自動保存停一秒才寫入
+
+    await page.reload();
+    await expect(page.getByText('找到上次的逐字稿：')).toBeVisible();
+    await expect(page.getByText(/共 3 段/)).toBeVisible();
+    await page.getByRole('button', { name: '打開' }).click();
+    expect(await transcriptTexts(page)).toEqual(['改過還沒下載的內容', '第1段', '第2段']);
+    await expect(page.getByLabel('原始音檔')).toHaveCount(0); // 還沒有音檔
+
+    await page.setInputFiles('input[type=file]', meetingWav());
+    await expect(page.getByLabel('原始音檔')).toBeVisible();
+    expect(await transcriptTexts(page)).toEqual(['改過還沒下載的內容', '第1段', '第2段']);
+  });
+
+  test('可以刪除上次的逐字稿', async ({ page, openApp }) => {
+    await openApp();
+    await transcribe(page);
+    await page.waitForTimeout(1500);
+    await page.reload();
+    await page.getByRole('button', { name: '刪除', exact: true }).click();
+    await expect(page.getByText('找到上次的逐字稿：')).toHaveCount(0);
+    expect(await page.evaluate(() => localStorage.getItem('transcription_last'))).toBeNull();
+  });
+});

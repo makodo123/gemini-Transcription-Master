@@ -11,6 +11,7 @@ import { resetModelSelection, validateApiKey } from './services/geminiService';
 import { clearProgress, peekProgress } from './utils/progressStorage';
 import { loadSpeedHistory } from './utils/speedHistory';
 import { toPlainText, baseFileName, downloadText } from './utils/transcriptExport';
+import { saveLastTranscript, loadLastTranscript, clearLastTranscript } from './utils/transcriptStore';
 import { CHUNK_DURATION, MAX_CONCURRENCY } from './constants';
 
 function App() {
@@ -26,6 +27,10 @@ function App() {
   const [copyNotice, setCopyNotice] = useState<string | null>(null);
   // 上次未完成的轉錄（重新打開頁面時提醒使用者）
   const [pendingProgress, setPendingProgress] = useState(() => peekProgress());
+  // 自動保存的上一份逐字稿（重新打開頁面時可以找回）
+  const [savedTranscript, setSavedTranscript] = useState(() => loadLastTranscript());
+  // 目前逐字稿屬於哪個檔案：選了檔就是那個檔；找回的逐字稿在選檔前沿用保存時的資訊
+  const [restoredFrom, setRestoredFrom] = useState<{ fileName: string; fileSize: number } | null>(null);
   // 最新選的檔案；讀長度期間又換檔時，舊檔的結果就不採用
   const selectedFileRef = useRef<File | null>(null);
 
@@ -90,6 +95,37 @@ function App() {
     return () => window.removeEventListener('beforeunload', warn);
   }, [isBusy, hasUnexported]);
 
+  // 逐字稿有變動就自動保存（停一秒再存，打字時不會一直寫入）
+  const transcriptOwner = file ? { fileName: file.name, fileSize: file.size } : restoredFrom;
+  useEffect(() => {
+    if (transcripts.length === 0 || !transcriptOwner) return;
+    const timer = setTimeout(() => saveLastTranscript(transcriptOwner.fileName, transcriptOwner.fileSize, transcripts), 1000);
+    return () => clearTimeout(timer);
+  }, [transcripts, transcriptOwner?.fileName, transcriptOwner?.fileSize]);
+
+  // 畫面上沒有逐字稿時（例如換了新檔案），重新讀取保存的那一份，提供找回
+  const hasTranscripts = transcripts.length > 0;
+  useEffect(() => {
+    if (!hasTranscripts) setSavedTranscript(loadLastTranscript());
+  }, [hasTranscripts]);
+
+  const openSavedTranscript = () => {
+    if (!savedTranscript) return;
+    if (transcripts.length > 0 && !confirmDiscard('打開上次的逐字稿')) return;
+    transcription.restore(savedTranscript.transcripts);
+    setRestoredFrom({ fileName: savedTranscript.fileName, fileSize: savedTranscript.fileSize });
+    setFile(null);
+    setFileDuration(null);
+    setExportedTranscripts(null);
+    setSavedTranscript(null);
+  };
+
+  const deleteSavedTranscript = () => {
+    if (!window.confirm('確定要刪除上次的逐字稿嗎？刪除後無法找回。')) return;
+    clearLastTranscript();
+    setSavedTranscript(null);
+  };
+
   /** 會清掉目前逐字稿的動作先確認；已下載且沒再修改就不用問 */
   const confirmDiscard = (action: string, extra = '') =>
     !hasUnexported ||
@@ -102,7 +138,19 @@ function App() {
       return;
     }
     setFileError(null);
+    // 找回的逐字稿選回同一個音檔：保留逐字稿，只是加上播放器
+    if (restoredFrom && restoredFrom.fileName === selected.name && restoredFrom.fileSize === selected.size) {
+      setFile(selected);
+      setRestoredFrom(null);
+      setFileDuration(null);
+      selectedFileRef.current = selected;
+      getAudioDuration(selected).then(duration => {
+        if (selectedFileRef.current === selected) setFileDuration(duration);
+      });
+      return;
+    }
     if (!confirmDiscard('換成新的檔案')) return;
+    setRestoredFrom(null);
     setFile(selected);
     transcription.reset();
     setFileDuration(null);
@@ -176,6 +224,22 @@ function App() {
       <AppHeader apiKey={apiKey} onOpenKeySettings={() => setKeyModalOpen(true)} />
 
       <main className="w-full max-w-4xl space-y-6">
+        {/* 上次自動保存的逐字稿；同一個檔案還有未完成的轉錄時，交給續傳提醒處理 */}
+        {savedTranscript && transcripts.length === 0 && !isBusy &&
+          !(pendingProgress && pendingProgress.fileName === savedTranscript.fileName && pendingProgress.fileSize === savedTranscript.fileSize) && (
+          <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200 text-sm text-indigo-900 flex flex-wrap items-center gap-x-4 gap-y-2">
+            <p className="flex-grow">
+              找到上次的逐字稿：<span className="font-medium break-all">{savedTranscript.fileName}</span>
+              （{new Date(savedTranscript.savedAt).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}，共 {savedTranscript.transcripts.length} 段）。
+              打開後再選同一個音檔，就能邊聽邊校對。
+            </p>
+            <div className="flex gap-2">
+              <button onClick={openSavedTranscript} className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium">打開</button>
+              <button onClick={deleteSavedTranscript} className="px-3 py-1.5 rounded-lg text-indigo-700 hover:bg-indigo-100">刪除</button>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <UploadCard
             file={file}

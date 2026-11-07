@@ -90,6 +90,8 @@ export class Dialogs {
   readonly messages: { type: string; message: string }[] = [];
   /** confirm 要回答「確定」還是「取消」 */
   answer = true;
+  /** 離開頁面的提醒要回答「離開」（重新整理頁面時需要），預設留在頁面 */
+  allowLeave = false;
   last() { return this.messages.at(-1)?.message ?? ''; }
 }
 
@@ -148,7 +150,10 @@ export const test = base.extend<{ gemini: GeminiMock; dialogs: Dialogs; openApp:
     const dialogs = new Dialogs();
     page.on('dialog', dialog => {
       dialogs.messages.push({ type: dialog.type(), message: dialog.message() });
-      if (dialog.type() === 'beforeunload' || !dialogs.answer) dialog.dismiss();
+      if (dialog.type() === 'beforeunload') {
+        if (dialogs.allowLeave) dialog.accept();
+        else dialog.dismiss();
+      } else if (!dialogs.answer) dialog.dismiss();
       else dialog.accept();
     });
     await use(dialogs);
