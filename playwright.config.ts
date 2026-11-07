@@ -6,6 +6,8 @@ const DEV_URL = 'http://localhost:5173/gemini-Transcription-Master/';
 export default defineConfig({
   testDir: 'tests/e2e',
   timeout: 120_000,
+  // 解碼與多段並行在 CI 上可能較慢
+  expect: { timeout: 15_000 },
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   workers: process.env.CI ? 2 : undefined,
