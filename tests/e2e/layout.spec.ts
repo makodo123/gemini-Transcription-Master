@@ -1,7 +1,5 @@
 import { test, expect, transcribe, restartButton } from './helpers';
 
-// 這些測試需要 Tailwind 樣式（線上從 CDN 載入；本機沒有網路時用 TAILWIND_BROWSER_JS）
-
 const LONG = '這是一段很長的發言，用來測試文字框會不會把內容切掉。'.repeat(6);
 
 test('長句子不會被文字框切掉；視窗變寬後高度重新計算', async ({ page, openApp, gemini }) => {

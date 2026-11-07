@@ -78,14 +78,9 @@ interface OpenOptions {
 export const test = base.extend<{ gemini: GeminiMock; dialogs: Dialogs; openApp: (options?: OpenOptions) => Promise<void> }>({
   gemini: async ({ page }, use) => {
     const mock = new GeminiMock();
-    // 在本機沒有網路時可用 TAILWIND_BROWSER_JS 指向 @tailwindcss/browser 的檔案代替 CDN
-    const tailwind = process.env.TAILWIND_BROWSER_JS ? fs.readFileSync(process.env.TAILWIND_BROWSER_JS, 'utf8') : null;
     await page.route('**/*', async route => {
       const url = route.request().url();
       if (url.startsWith('http://localhost')) return route.continue();
-      if (url.includes('cdn.tailwindcss.com')) {
-        return tailwind ? route.fulfill({ contentType: 'application/javascript', body: tailwind }) : route.continue();
-      }
       if (url.includes('generativelanguage.googleapis.com')) {
         const body = JSON.parse(route.request().postData() ?? '{}');
         const chunk = chunkOf(body.contents[0].parts[0].inlineData.data);
