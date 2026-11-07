@@ -49,6 +49,15 @@ describe('parseGeminiError', () => {
   });
 });
 
+describe('模型停用', () => {
+  it('模型不存在：不可重試，說明模型已停用', () => {
+    const e = parseGeminiError(apiError(404, 'models/gemini-3-flash-preview is not found for API version v1beta, or is not supported for generateContent.', 'NOT_FOUND'));
+    expect(e.type).toBe(ErrorType.MODEL_UNAVAILABLE);
+    expect(e.retryable).toBe(false);
+    expect(e.userMessage).toContain('模型已停用');
+  });
+});
+
 describe('isRateLimitError', () => {
   it.each(['429 Too Many Requests', 'RESOURCE_EXHAUSTED', 'exceeded your current quota'])('%s', message => {
     expect(isRateLimitError(new Error(message))).toBe(true);

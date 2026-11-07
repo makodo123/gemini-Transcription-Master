@@ -7,6 +7,7 @@ import {
   getChunkCount,
   getChunkCountForDuration,
   pcmChunkToWav,
+  isMediaFile,
   TRANSCRIBE_SAMPLE_RATE,
 } from '../../utils/audioUtils';
 import { TranscriptSegment } from '../../types';
@@ -143,5 +144,25 @@ describe('pcmChunkToWav', () => {
     expect(getChunkCount(pcm, 1)).toBe(2);
     const wav = await readWav(pcmChunkToWav(pcm, 1, 1));
     expect(wav.dataBytes).toBe(TRANSCRIBE_SAMPLE_RATE * 1.5 * 2);
+  });
+});
+
+describe('isMediaFile', () => {
+  it.each([
+    ['meeting.mp3', 'audio/mpeg'],
+    ['zoom.mp4', 'video/mp4'],
+    ['memo.m4a', ''], // 有些系統不給 m4a 類型
+    ['voice.OPUS', ''],
+    ['clip.mov', 'video/quicktime'],
+  ])('%s（%s）可以使用', (name, type) => {
+    expect(isMediaFile(new File([], name, { type }))).toBe(true);
+  });
+
+  it.each([
+    ['notes.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['photo.jpg', 'image/jpeg'],
+    ['readme', ''],
+  ])('%s 不能使用', (name, type) => {
+    expect(isMediaFile(new File([], name, { type }))).toBe(false);
   });
 });

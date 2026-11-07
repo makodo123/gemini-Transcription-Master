@@ -7,6 +7,7 @@ export enum ErrorType {
   AUDIO_DECODE_ERROR = 'AUDIO_DECODE_ERROR',
   QUOTA_EXCEEDED = 'QUOTA_EXCEEDED',
   INVALID_API_KEY = 'INVALID_API_KEY',
+  MODEL_UNAVAILABLE = 'MODEL_UNAVAILABLE',
   UNKNOWN_ERROR = 'UNKNOWN_ERROR'
 }
 
@@ -34,6 +35,12 @@ export class AppError extends Error {
 
 export const isRateLimitError = (error: unknown): boolean =>
   /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(String((error as Error)?.message || error));
+
+/** 模型不存在或已停用（例如預覽版模型下架） */
+export const isModelNotFoundError = (error: unknown): boolean => {
+  const message = String((error as Error)?.message || error);
+  return /NOT_FOUND|\b404\b|is not supported for generateContent/i.test(message) && /model/i.test(message);
+};
 
 /**
  * 解析 Gemini API 错误
@@ -69,6 +76,11 @@ export const parseGeminiError = (error: any): AppError => {
       '網路連線發生問題，請檢查您的網路連線',
       true
     );
+  }
+
+  // 模型已停用且找不到替代模型：重試也沒用
+  if (isModelNotFoundError(error)) {
+    return new AppError(ErrorType.MODEL_UNAVAILABLE, errorMessage, '目前使用的 Gemini 模型已停用，也找不到可以替代的模型', false);
   }
 
   // 以下都顯示白話說明，不把原始錯誤內容（常是一整段 JSON）秀給使用者；原文留在 message 供除錯

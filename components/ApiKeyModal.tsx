@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Key, Save, X, Eye, EyeOff, Trash2 } from 'lucide-react';
+import { Key, Save, X, Eye, EyeOff, Trash2, Loader2 } from 'lucide-react';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -7,15 +7,20 @@ interface ApiKeyModalProps {
   onSave: (key: string) => void;
   onClear: () => void;
   currentKey: string;
+  /** 儲存前確認金鑰有效；沒給就直接儲存 */
+  validate?: (key: string) => Promise<'valid' | 'invalid' | 'unknown'>;
 }
 
-const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, onClear, currentKey }) => {
+const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, onClear, currentKey, validate }) => {
   const [inputValue, setInputValue] = useState('');
   const [showKey, setShowKey] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       setInputValue(currentKey || '');
+      setError(null);
     }
   }, [isOpen, currentKey]);
 
@@ -30,10 +35,22 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, onCl
   if (!isOpen) return null;
 
   // 用 form 送出，輸入框裡按 Enter 就會儲存
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputValue.trim()) return;
-    onSave(inputValue.trim());
+    const key = inputValue.trim();
+    if (!key || checking) return;
+    if (validate) {
+      setChecking(true);
+      setError(null);
+      const result = await validate(key);
+      setChecking(false);
+      // 無法確認（例如網路問題）時仍先儲存，不讓使用者卡住
+      if (result === 'invalid') {
+        setError('這組 API Key 無效，請確認是否完整複製（通常以 AIza 開頭）。');
+        return;
+      }
+    }
+    onSave(key);
     onClose();
   };
 
@@ -74,7 +91,7 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, onCl
             <input
               type={showKey ? "text" : "password"}
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => { setInputValue(e.target.value); setError(null); }}
               placeholder="貼上您的 API Key"
               aria-label="API Key"
               autoFocus
@@ -89,6 +106,8 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, onCl
               {showKey ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
             </button>
           </div>
+
+          {error && <p role="alert" className="-mt-4 mb-4 text-sm text-red-600">{error}</p>}
 
           <div className="flex items-center gap-3">
             {currentKey && (
@@ -110,11 +129,11 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, onCl
             </button>
             <button
               type="submit"
-              disabled={!inputValue.trim()}
+              disabled={!inputValue.trim() || checking}
               className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-lg shadow-md transition-colors font-medium flex items-center gap-2"
             >
-              <Save className="w-4 h-4" />
-              儲存
+              {checking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              {checking ? '確認中…' : '儲存'}
             </button>
           </div>
         </form>

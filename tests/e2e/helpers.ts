@@ -54,6 +54,13 @@ export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, 
 export class GeminiMock {
   /** 每次請求是第幾段 */
   readonly requests: number[] = [];
+  /** 每次請求用的模型 */
+  readonly models: string[] = [];
+  /** 這組 API Key 列得出的模型；listError 設定時列模型會失敗 */
+  available = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
+  listError: { error: { code: number; message: string; status: string } } | null = null;
+  /** 這些模型會回 404（模擬已停用） */
+  retired: string[] = [];
   handler: (chunk: number) => GeminiReply | Promise<GeminiReply> =
     chunk => [{ speaker: '講者 1', timestamp: '00:05', text: `第${chunk}段` }];
 }
@@ -81,7 +88,22 @@ export const test = base.extend<{ gemini: GeminiMock; dialogs: Dialogs; openApp:
     await page.route('**/*', async route => {
       const url = route.request().url();
       if (url.startsWith('http://localhost')) return route.continue();
+      if (url.includes('generativelanguage.googleapis.com') && route.request().method() === 'GET') {
+        // 列出模型：驗證 API Key、模型停用時找替代模型
+        if (mock.listError) return route.fulfill({ status: mock.listError.error.code, contentType: 'application/json', body: JSON.stringify(mock.listError) });
+        return route.fulfill({
+          contentType: 'application/json',
+          // 真正的 REST API 回傳 supportedGenerationMethods，SDK 會轉成 supportedActions
+          body: JSON.stringify({ models: mock.available.map(name => ({ name: `models/${name}`, supportedGenerationMethods: ['generateContent'] })) }),
+        });
+      }
       if (url.includes('generativelanguage.googleapis.com')) {
+        const model = url.match(/models\/([^:]+):generateContent/)?.[1] ?? '';
+        mock.models.push(model);
+        if (mock.retired.includes(model)) {
+          const error = { error: { code: 404, message: `models/${model} is not found for API version v1beta, or is not supported for generateContent.`, status: 'NOT_FOUND' } };
+          return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify(error) });
+        }
         const body = JSON.parse(route.request().postData() ?? '{}');
         const chunk = chunkOf(body.contents[0].parts[0].inlineData.data);
         mock.requests.push(chunk);

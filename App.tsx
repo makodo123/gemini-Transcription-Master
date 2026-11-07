@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { getChunkCountForDuration, getAudioDuration, generateSrtContent } from './utils/audioUtils';
+import { getChunkCountForDuration, getAudioDuration, generateSrtContent, isMediaFile } from './utils/audioUtils';
 import { AppStatus, TranscriptSegment } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
 import AppHeader from './components/AppHeader';
@@ -7,6 +7,7 @@ import UploadCard from './components/UploadCard';
 import StatusCard from './components/StatusCard';
 import TranscriptPanel from './components/TranscriptPanel';
 import { useTranscription } from './hooks/useTranscription';
+import { resetModelSelection, validateApiKey } from './services/geminiService';
 import { clearProgress, peekProgress } from './utils/progressStorage';
 import { loadSpeedHistory } from './utils/speedHistory';
 import { toPlainText, baseFileName, downloadText } from './utils/transcriptExport';
@@ -18,6 +19,7 @@ function App() {
   const [file, setFile] = useState<File | null>(null);
   // 選檔後讀到的音檔長度（秒）；讀不到時為 null
   const [fileDuration, setFileDuration] = useState<number | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
   const [includeTimestamps, setIncludeTimestamps] = useState(true);
   // 最後一次下載時的逐字稿；和目前的不同，代表有還沒下載的內容（新結果或修改）
   const [exportedTranscripts, setExportedTranscripts] = useState<TranscriptSegment[] | null>(null);
@@ -41,6 +43,8 @@ function App() {
   }, []);
 
   const handleSaveKey = (key: string) => {
+    // 換了 API Key，可用的模型可能不同，重新從預設模型開始
+    if (key !== apiKey) resetModelSelection();
     setApiKey(key);
     localStorage.setItem('gemini_api_key', key);
   };
@@ -89,6 +93,12 @@ function App() {
     window.confirm(`${action}會清除目前的逐字稿${extra}。\n\n這份逐字稿還沒下載，您做的修改也會一起消失。確定要繼續嗎？`);
 
   const selectFile = (selected: File) => {
+    // 不是音訊或影片就不換檔，目前的檔案與逐字稿維持原樣
+    if (!isMediaFile(selected)) {
+      setFileError(`「${selected.name}」不是音訊或影片檔，請選擇 MP3、M4A、WAV 或 MP4 等格式。`);
+      return;
+    }
+    setFileError(null);
     if (!confirmDiscard('換成新的檔案')) return;
     setFile(selected);
     transcription.reset();
@@ -157,6 +167,7 @@ function App() {
         onSave={handleSaveKey}
         onClear={handleClearKey}
         currentKey={apiKey}
+        validate={validateApiKey}
       />
 
       <AppHeader apiKey={apiKey} onOpenKeySettings={() => setKeyModalOpen(true)} />
@@ -173,6 +184,7 @@ function App() {
             failedCount={failedCount}
             pendingProgress={pendingProgress}
             pendingMatchesFile={pendingMatchesFile}
+            fileError={fileError}
             onSelectFile={selectFile}
             onDiscardPending={discardPendingProgress}
             onStart={handleStart}

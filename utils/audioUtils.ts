@@ -106,6 +106,16 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
   });
 };
 
+// 有些系統不會給音檔正確的 MIME 類型（例如 .opus、.m4a 常是空白），用副檔名補判斷
+const MEDIA_EXTENSIONS = ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg', 'oga', 'opus', 'webm', 'weba', 'mp4', 'm4v', 'mov', 'amr', '3gp', 'wma', 'aif', 'aiff', 'caf'];
+
+/** 是否為音訊或影片檔；其他檔案（文件、圖片等）選了也無法轉錄 */
+export const isMediaFile = (file: File): boolean => {
+  if (file.type.startsWith('audio/') || file.type.startsWith('video/')) return true;
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+  return MEDIA_EXTENSIONS.includes(extension);
+};
+
 /**
  * 只讀取音檔的中繼資料取得長度（秒），不解碼整個檔案；瀏覽器無法讀取時回傳 null。
  */

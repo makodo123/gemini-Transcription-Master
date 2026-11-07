@@ -1,9 +1,86 @@
-import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
+import { GoogleGenAI, ThinkingConfig, ThinkingLevel, Type } from "@google/genai";
 import { TranscriptSegment } from "../types";
 import { blobToBase64, parseTimeStringToSeconds } from "../utils/audioUtils";
-import { isRateLimitError, parseGeminiError } from "../utils/errorHandling";
+import { isRateLimitError, isModelNotFoundError, parseGeminiError, ErrorType } from "../utils/errorHandling";
 
 export const MODEL_NAME = 'gemini-3-flash-preview';
+
+// 目前實際使用的模型：預設模型停用（例如預覽版下架）時，改成自動找到的替代模型
+let activeModel = MODEL_NAME;
+let fallbackLookup: { from: string; result: Promise<string | null> } | null = null;
+
+export const getActiveModel = () => activeModel;
+
+/** 回到預設模型（換 API Key 時、測試用） */
+export const resetModelSelection = () => {
+  activeModel = MODEL_NAME;
+  fallbackLookup = null;
+};
+
+const modelVersion = (model: string) => Number(model.match(/gemini-(\d+(?:\.\d+)?)/)?.[1] ?? 0);
+
+/** 各世代的「最少思考」設定：3 以後用 thinkingLevel，2.5 用 thinkingBudget */
+export const thinkingConfigFor = (model: string): ThinkingConfig =>
+  modelVersion(model) >= 3 ? { thinkingLevel: ThinkingLevel.MINIMAL } : { thinkingBudget: 0 };
+
+export interface ModelInfo { name?: string; supportedActions?: string[] }
+
+/**
+ * 從可用模型中挑替代模型：能用 generateContent 的 Flash（不含 Lite、圖片、語音等特殊版本），
+ * 2.5 以後；正式版優先，再挑最新的版本。
+ */
+export const pickFallbackModel = (models: ModelInfo[], exclude: string): string | null => {
+  const candidates = models
+    .map(m => ({ name: (m.name ?? '').replace(/^models\//, ''), actions: m.supportedActions ?? [] }))
+    .filter(m => m.actions.includes('generateContent') && m.name !== exclude)
+    .filter(m => /^gemini-\d+(\.\d+)?-flash(-preview(-[\w-]+)?)?$/.test(m.name) && !/lite|image|tts|live|audio/.test(m.name))
+    .filter(m => modelVersion(m.name) >= 2.5);
+  candidates.sort((a, b) => {
+    const aPreview = a.name.includes('preview') ? 1 : 0, bPreview = b.name.includes('preview') ? 1 : 0;
+    return aPreview - bPreview || modelVersion(b.name) - modelVersion(a.name);
+  });
+  return candidates[0]?.name ?? null;
+};
+
+/** 列出這組 API Key 可用的模型（不耗額度） */
+const listModels = async (apiKey: string, pageSize = 100): Promise<ModelInfo[]> => {
+  const ai = new GoogleGenAI({ apiKey });
+  const pager = await ai.models.list({ config: { pageSize } });
+  const models: ModelInfo[] = [];
+  for await (const model of pager) models.push(model);
+  return models;
+};
+
+/**
+ * 模型不存在時找替代模型並切換；同時有好幾段失敗也只查一次。找不到時回傳 null。
+ */
+const switchToFallbackModel = async (apiKey: string, failedModel: string): Promise<string | null> => {
+  if (activeModel !== failedModel) return activeModel; // 其他段已經換好了
+  if (!fallbackLookup || fallbackLookup.from !== failedModel) {
+    fallbackLookup = {
+      from: failedModel,
+      result: listModels(apiKey).then(models => pickFallbackModel(models, failedModel)).catch(() => null),
+    };
+  }
+  const next = await fallbackLookup.result;
+  if (next && activeModel === failedModel) {
+    console.warn(`Model ${failedModel} is unavailable, switching to ${next}`);
+    activeModel = next;
+  }
+  return next;
+};
+
+export type ApiKeyCheck = 'valid' | 'invalid' | 'unknown';
+
+/** 儲存前確認 API Key 有效：列模型不耗額度。網路問題等無法判斷時回傳 unknown */
+export const validateApiKey = async (apiKey: string): Promise<ApiKeyCheck> => {
+  try {
+    await listModels(apiKey, 1);
+    return 'valid';
+  } catch (error) {
+    return parseGeminiError(error).type === ErrorType.INVALID_API_KEY ? 'invalid' : 'unknown';
+  }
+};
 
 interface GeminiResponseItem {
   speaker: string;
@@ -46,6 +123,7 @@ export interface RequestLogEntry {
   outputChars?: number;
   outputTokens?: number;
   thinkingTokens?: number;
+  model?: string;
   error?: string;
 }
 
@@ -113,8 +191,8 @@ export const transcribeChunk = async (
       4. 如果音訊包含多種語言，請主要轉錄為中文，保留專有名詞原文。
     `;
 
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
+    const generate = (model: string) => ai.models.generateContent({
+      model,
       contents: {
         parts: [
           {
@@ -129,7 +207,7 @@ export const transcribeChunk = async (
       config: {
         abortSignal: options?.signal,
         // 逐字稿是聽寫任務，幾乎不需要推理；思考內容也要逐字產生，設為最低以縮短等待時間
-        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+        thinkingConfig: thinkingConfigFor(model),
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.ARRAY,
@@ -145,6 +223,21 @@ export const transcribeChunk = async (
         }
       }
     });
+
+    let model = activeModel;
+    log.model = model;
+    let response;
+    try {
+      response = await generate(model);
+    } catch (error) {
+      // 模型停用：換成替代模型馬上重送（不算重試次數）；找不到替代模型就照原錯誤往外丟
+      if (!isModelNotFoundError(error)) throw error;
+      const fallback = await switchToFallbackModel(apiKey, model);
+      if (!fallback) throw error;
+      model = fallback;
+      log.model = model;
+      response = await generate(model);
+    }
 
     const responseText = response.text;
     log.ms = Math.round(performance.now() - log.startedAt);

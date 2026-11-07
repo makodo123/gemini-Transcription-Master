@@ -62,6 +62,27 @@ describe('ApiKeyModal', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it('儲存前先確認：無效的金鑰不儲存並說明', async () => {
+    const props = { isOpen: true, onClose: vi.fn(), onSave: vi.fn(), onClear: vi.fn(), currentKey: '', validate: vi.fn().mockResolvedValue('invalid') };
+    render(<ApiKeyModal {...props} />);
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'wrong' } });
+    fireEvent.submit(screen.getByLabelText('API Key').closest('form')!);
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('這組 API Key 無效');
+    expect(props.validate).toHaveBeenCalledWith('wrong');
+    expect(props.onSave).not.toHaveBeenCalled();
+    expect(props.onClose).not.toHaveBeenCalled();
+  });
+
+  it.each(['valid', 'unknown'] as const)('確認結果為 %s 時儲存', async result => {
+    const props = { isOpen: true, onClose: vi.fn(), onSave: vi.fn(), onClear: vi.fn(), currentKey: '', validate: vi.fn().mockResolvedValue(result) };
+    render(<ApiKeyModal {...props} />);
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'AIza-ok' } });
+    fireEvent.submit(screen.getByLabelText('API Key').closest('form')!);
+    await vi.waitFor(() => expect(props.onSave).toHaveBeenCalledWith('AIza-ok'));
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
   it('空白時不能儲存', () => {
     const { onSave } = setup();
     expect((screen.getByRole('button', { name: /儲存/ }) as HTMLButtonElement).disabled).toBe(true);

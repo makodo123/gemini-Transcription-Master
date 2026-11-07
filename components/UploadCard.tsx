@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Upload, FileAudio, Play, StopCircle, RefreshCw, Info, History } from 'lucide-react';
+import { Upload, FileAudio, Play, StopCircle, RefreshCw, Info, History, AlertCircle } from 'lucide-react';
 import { AppStatus } from '../types';
 import { formatTime } from '../utils/audioUtils';
 import { CHUNK_DURATION } from '../constants';
@@ -21,6 +21,8 @@ interface UploadCardProps {
   failedCount: number;
   pendingProgress: PendingProgress | null;
   pendingMatchesFile: boolean;
+  /** 選到無法使用的檔案時的說明 */
+  fileError: string | null;
   onSelectFile: (file: File) => void;
   onDiscardPending: () => void;
   onStart: () => void;
@@ -31,7 +33,7 @@ interface UploadCardProps {
 /** 上傳區：未完成進度提醒、選檔（點擊、拖曳、鍵盤）、音檔資訊與開始／停止按鈕 */
 const UploadCard: React.FC<UploadCardProps> = ({
   file, fileDuration, fileEstimate, status, isBusy, canStart, failedCount,
-  pendingProgress, pendingMatchesFile, onSelectFile, onDiscardPending, onStart, onRetryFailed, onStop,
+  pendingProgress, pendingMatchesFile, fileError, onSelectFile, onDiscardPending, onStart, onRetryFailed, onStop,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -111,7 +113,7 @@ const UploadCard: React.FC<UploadCardProps> = ({
            type="file"
            ref={fileInputRef}
            onChange={handleFileChange}
-           accept="audio/*"
+           accept="audio/*,video/*"
            disabled={isBusy}
            className="hidden"
          />
@@ -135,10 +137,17 @@ const UploadCard: React.FC<UploadCardProps> = ({
            <div className="text-slate-500 flex flex-col items-center">
              <Upload className="w-10 h-10 mb-2 text-slate-300" />
              <span>點擊選擇，或把音檔拖曳到這裡</span>
-             <span className="text-xs text-slate-400 mt-1">支援 MP3、M4A、WAV 等常見格式</span>
+             <span className="text-xs text-slate-400 mt-1">支援 MP3、M4A、WAV，以及 MP4、MOV 影片的聲音</span>
            </div>
          )}
        </div>
+
+       {fileError && (
+         <p role="alert" className="mt-3 text-sm text-red-600 flex items-start gap-1.5">
+           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+           {fileError}
+         </p>
+       )}
 
        <p className="mt-3 text-xs text-slate-400 flex items-start gap-1.5">
          <Info className="w-3.5 h-3.5 mt-px shrink-0" />

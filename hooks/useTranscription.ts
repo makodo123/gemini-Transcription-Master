@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, useCallback } from 'react';
 import { decodeAudio, getChunkCount, pcmChunkToWav, formatTime, TRANSCRIBE_SAMPLE_RATE } from '../utils/audioUtils';
-import { transcribeChunk, MODEL_NAME, requestLog } from '../services/geminiService';
+import { transcribeChunk, MODEL_NAME, getActiveModel, requestLog } from '../services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats } from '../types';
 import { saveProgress, loadProgress, clearProgress } from '../utils/progressStorage';
 import { parseGeminiError, parseAudioError, ErrorType } from '../utils/errorHandling';
@@ -28,7 +28,9 @@ const buildPerfReport = (totalMs: number, decodeMs: number, minConcurrency: numb
   console.table(requestLog);
   const summary = `這次轉錄了 ${chunkCount} 段（每段 ${CHUNK_DURATION / 60} 分鐘），共花 ${secs(totalMs)} 秒`;
   const details = [
-    `模型：${MODEL_NAME}`,
+    getActiveModel() === MODEL_NAME
+      ? `模型：${MODEL_NAME}`
+      : `模型：${getActiveModel()}（預設的 ${MODEL_NAME} 已無法使用，自動改用）`,
     `總耗時 ${secs(totalMs)} 秒（讀取音檔 ${secs(decodeMs)} 秒）`,
     `API 請求 ${requestLog.length} 次：成功 ${ok.length}、失敗 ${failed.length}（其中請求次數過多 ${rateLimited.length} 次）`,
     times.length ? `單段請求耗時：平均 ${secs(avg)} 秒，最短 ${secs(Math.min(...times))} 秒，最長 ${secs(Math.max(...times))} 秒` : '',
@@ -265,6 +267,11 @@ export const useTranscription = (file: File | null, apiKey: string) => {
             // API Key 無效、或重試後仍超過配額：後面的片段也只會失敗，整輪暫停
             if (appError.type === ErrorType.INVALID_API_KEY) {
               fatalError = `${appError.userMessage}。請按右上角的「API Key」重新輸入，再按「開始轉錄」從中斷處繼續；已完成的段落都已保存。`;
+              controller.abort();
+              return;
+            }
+            if (appError.type === ErrorType.MODEL_UNAVAILABLE) {
+              fatalError = `${appError.userMessage}，網站需要更新才能繼續使用。請到 GitHub 專案頁回報問題；已完成的段落都已保存。`;
               controller.abort();
               return;
             }

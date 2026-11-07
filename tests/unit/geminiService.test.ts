@@ -3,13 +3,17 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // 用假的 SDK 取代真正的 Gemini 呼叫
 const generateContent = vi.fn();
+const listModels = vi.fn();
 vi.mock('@google/genai', () => ({
-  GoogleGenAI: class { models = { generateContent }; },
+  GoogleGenAI: class { models = { generateContent, list: listModels }; },
   ThinkingLevel: { MINIMAL: 'MINIMAL' },
   Type: { ARRAY: 'ARRAY', OBJECT: 'OBJECT', STRING: 'STRING' },
 }));
 
-const { transcribeChunk, requestLog } = await import('../../services/geminiService');
+const {
+  transcribeChunk, requestLog, getActiveModel, resetModelSelection, pickFallbackModel, thinkingConfigFor, validateApiKey, MODEL_NAME,
+} = await import('../../services/geminiService');
+const { parseGeminiError, ErrorType } = await import('../../utils/errorHandling');
 
 const audio = new Blob([new Uint8Array(64)], { type: 'audio/wav' });
 const reply = (items: object[]) => ({ text: JSON.stringify(items), usageMetadata: { candidatesTokenCount: 10, thoughtsTokenCount: 0 } });
@@ -17,6 +21,8 @@ const serverError = () => new Error('got status: 500. {"error":{"code":500,"mess
 
 beforeEach(() => {
   generateContent.mockReset();
+  listModels.mockReset();
+  resetModelSelection();
   requestLog.length = 0;
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -95,5 +101,83 @@ describe('transcribeChunk', () => {
     await vi.advanceTimersByTimeAsync(0);
     await settled;
     expect(generateContent).toHaveBeenCalledTimes(1);
+  });
+});
+
+// 模擬 SDK 的分頁列表（可以 for await 逐一取出）
+const pagerOf = (names: string[]) => (async function* () {
+  for (const name of names) yield { name: `models/${name}`, supportedActions: ['generateContent', 'countTokens'] };
+})();
+const notFound = (model: string) =>
+  new Error(`got status: 404. {"error":{"code":404,"message":"models/${model} is not found for API version v1beta, or is not supported for generateContent.","status":"NOT_FOUND"}}`);
+
+describe('模型停用時的備援', () => {
+  it('思考設定依模型世代：3 以後用 thinkingLevel，2.5 用 thinkingBudget', () => {
+    expect(thinkingConfigFor('gemini-3-flash-preview')).toEqual({ thinkingLevel: 'MINIMAL' });
+    expect(thinkingConfigFor('gemini-4-flash')).toEqual({ thinkingLevel: 'MINIMAL' });
+    expect(thinkingConfigFor('gemini-2.5-flash')).toEqual({ thinkingBudget: 0 });
+  });
+
+  it('挑替代模型：正式版 Flash 優先、版本新的優先，排除 Lite、圖片、語音等特殊版本', () => {
+    const models = (names: string[]) => names.map(n => ({ name: `models/${n}`, supportedActions: ['generateContent'] }));
+    expect(pickFallbackModel(models([
+      'gemini-2.5-flash', 'gemini-3-flash', 'gemini-4-flash-preview', 'gemini-3-flash-lite', 'gemini-3-flash-image', 'gemini-3-pro',
+    ]), MODEL_NAME)).toBe('gemini-3-flash');
+    expect(pickFallbackModel(models(['gemini-2.5-flash', 'gemini-4-flash-preview']), 'gemini-2.5-flash')).toBe('gemini-4-flash-preview');
+    expect(pickFallbackModel(models(['gemini-2.0-flash', 'gemini-3-flash-lite']), MODEL_NAME)).toBeNull();
+    expect(pickFallbackModel([{ name: 'models/gemini-3-flash', supportedActions: ['embedContent'] }], MODEL_NAME)).toBeNull();
+  });
+
+  it('預設模型 404：查一次可用模型、改用替代模型馬上重送，之後的請求都用新模型', async () => {
+    generateContent.mockImplementation(({ model }) =>
+      model === MODEL_NAME ? Promise.reject(notFound(model)) : Promise.resolve(reply([{ speaker: 'A', timestamp: '00:01', text: 'ok' }])));
+    listModels.mockImplementation(() => Promise.resolve(pagerOf(['gemini-2.5-flash', 'gemini-3-flash'])));
+
+    // 三段同時遇到 404，只查一次模型列表
+    const results = await Promise.all([0, 1, 2].map(i => transcribeChunk(audio, 'key', i, i * 300, { retryDelay: 1 })));
+    expect(results.every(r => r.length === 1)).toBe(true);
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(getActiveModel()).toBe('gemini-3-flash');
+    const fallbackCall = generateContent.mock.calls.find(([req]) => req.model === 'gemini-3-flash')![0];
+    expect(fallbackCall.config.thinkingConfig).toEqual({ thinkingLevel: 'MINIMAL' });
+
+    generateContent.mockClear();
+    await transcribeChunk(audio, 'key', 3, 900);
+    expect(generateContent.mock.calls.map(([req]) => req.model)).toEqual(['gemini-3-flash']);
+  });
+
+  it('改用 2.5 時換成 thinkingBudget 設定', async () => {
+    generateContent.mockImplementation(({ model }) =>
+      model === MODEL_NAME ? Promise.reject(notFound(model)) : Promise.resolve(reply([])));
+    listModels.mockResolvedValue(pagerOf(['gemini-2.5-flash']));
+    await transcribeChunk(audio, 'key', 0, 0);
+    expect(generateContent.mock.calls.at(-1)![0].config.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it('找不到替代模型：不重試，錯誤歸類為「模型無法使用」', async () => {
+    generateContent.mockRejectedValue(notFound(MODEL_NAME));
+    listModels.mockResolvedValue(pagerOf(['gemini-3-pro', 'gemini-3-flash-lite']));
+    const error = await transcribeChunk(audio, 'key', 0, 0, { maxRetries: 3, retryDelay: 1 }).catch(e => e);
+    expect(parseGeminiError(error).type).toBe(ErrorType.MODEL_UNAVAILABLE);
+    expect(parseGeminiError(error).retryable).toBe(false);
+    expect(generateContent).toHaveBeenCalledTimes(1);
+    expect(getActiveModel()).toBe(MODEL_NAME);
+  });
+});
+
+describe('validateApiKey', () => {
+  it('列得出模型就是有效', async () => {
+    listModels.mockResolvedValue(pagerOf(['gemini-3-flash']));
+    await expect(validateApiKey('good')).resolves.toBe('valid');
+  });
+
+  it('API Key 錯誤時回報無效', async () => {
+    listModels.mockRejectedValue(new Error('got status: 400. API key not valid. Please pass a valid API key.'));
+    await expect(validateApiKey('bad')).resolves.toBe('invalid');
+  });
+
+  it('網路等其他問題無法判斷', async () => {
+    listModels.mockRejectedValue(new TypeError('Failed to fetch'));
+    await expect(validateApiKey('maybe')).resolves.toBe('unknown');
   });
 });
