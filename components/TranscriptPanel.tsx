@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { FileText, FileOutput, FileDown, Loader2, Copy, Check, Users } from 'lucide-react';
 import { TranscriptSegment } from '../types';
 import TranscriptRow from './TranscriptRow';
@@ -6,6 +6,8 @@ import SpeakerPanel from './SpeakerPanel';
 
 interface TranscriptPanelProps {
   transcripts: TranscriptSegment[];
+  /** 原始音檔的網址，用來播放；沒有檔案（例如找回的逐字稿）時為 null */
+  audioUrl: string | null;
   isBusy: boolean;
   speakers: { name: string; count: number }[];
   includeTimestamps: boolean;
@@ -20,10 +22,33 @@ interface TranscriptPanelProps {
 
 /** 逐字稿結果：工具列（改講者、複製、下載）與每一段的編輯欄 */
 const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
-  transcripts, isBusy, speakers, includeTimestamps, copyNotice,
+  transcripts, audioUrl, isBusy, speakers, includeTimestamps, copyNotice,
   onIncludeTimestampsChange, onRenameSpeaker, onUpdateSegment, onCopy, onDownloadTxt, onDownloadSrt,
 }) => {
   const [showSpeakerPanel, setShowSpeakerPanel] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  // 瀏覽器無法播放這個檔案時（少見的格式）隱藏播放器與播放鈕
+  const [playable, setPlayable] = useState(true);
+  const [currentTime, setCurrentTime] = useState(0);
+  const canPlay = !!audioUrl && playable;
+
+  // 往前多播半秒，避免開頭的字被切掉
+  const playFrom = useCallback((seconds: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = Math.max(0, seconds - 0.5);
+    void audio.play();
+  }, []);
+
+  // 目前播放到的那一段：開始時間不晚於播放位置的最後一段
+  const activeIndex = useMemo(() => {
+    if (currentTime <= 0) return -1;
+    let active = -1;
+    for (let i = 0; i < transcripts.length && transcripts[i].startTimeSeconds <= currentTime; i++) {
+      if (transcripts[i].failedChunk === undefined) active = i;
+    }
+    return active;
+  }, [transcripts, currentTime]);
 
   return (
     <div className="bg-white rounded-xl shadow-lg border border-slate-200">
@@ -77,13 +102,32 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
             下載 SRT 字幕
           </button>
         </div>
+        {audioUrl && playable && (
+          <audio
+            ref={audioRef}
+            src={audioUrl}
+            controls
+            preload="metadata"
+            aria-label="原始音檔"
+            onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
+            onError={() => setPlayable(false)}
+            className="w-full h-9 basis-full"
+          />
+        )}
       </div>
 
       {showSpeakerPanel && <SpeakerPanel speakers={speakers} onRename={onRenameSpeaker} />}
 
       <div className="divide-y divide-slate-100 p-4 space-y-4">
         {transcripts.map((segment, idx) => (
-          <TranscriptRow key={segment.id ?? idx} segment={segment} index={idx} onUpdate={onUpdateSegment} />
+          <TranscriptRow
+            key={segment.id ?? idx}
+            segment={segment}
+            index={idx}
+            onUpdate={onUpdateSegment}
+            onPlay={canPlay ? playFrom : undefined}
+            isActive={idx === activeIndex}
+          />
         ))}
 
         {isBusy && (

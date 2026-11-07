@@ -30,6 +30,9 @@ function App() {
   const selectedFileRef = useRef<File | null>(null);
 
   const transcription = useTranscription(file, apiKey);
+  // 原始音檔的網址，讓逐字稿可以點時間播放；換檔時釋放舊的
+  const audioUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
+  useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
   const { status, isBusy, transcripts, failedCount } = transcription;
   const hasUnexported = transcripts.length > 0 && transcripts !== exportedTranscripts;
   const pendingMatchesFile = !!(pendingProgress && file && pendingProgress.fileName === file.name && pendingProgress.fileSize === file.size);
@@ -206,6 +209,7 @@ function App() {
         {transcripts.length > 0 && (
           <TranscriptPanel
             transcripts={transcripts}
+            audioUrl={audioUrl}
             isBusy={isBusy}
             speakers={transcription.speakers}
             includeTimestamps={includeTimestamps}

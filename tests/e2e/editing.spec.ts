@@ -1,4 +1,4 @@
-import { test, expect, transcribe, timeInputs, timeValues } from './helpers';
+import { test, expect, transcribe, timeInputs, timeValues, meetingWav, serverError } from './helpers';
 
 test('改時間後依時間重新排序；無效的時間會還原', async ({ page, openApp, gemini }) => {
   gemini.handler = () => [{ speaker: 'A', timestamp: '00:05', text: '開場' }, { speaker: 'B', timestamp: '01:00', text: '回應' }];
@@ -83,4 +83,30 @@ test('長會議（1,440 段）打字不卡：只重繪正在編輯的那一段',
   });
   // 改善前每個字約 45 毫秒，改善後約 5 毫秒；門檻放寬給較慢的 CI 機器
   expect(median).toBeLessThan(25);
+});
+
+test('播放器：點時間旁的播放鈕從那一段開始播放，播放中的段落會標示', async ({ page, openApp, gemini }) => {
+  gemini.handler = chunk => [{ speaker: 'A', timestamp: '00:05', text: `第${chunk}段開頭` }, { speaker: 'B', timestamp: '01:00', text: `第${chunk}段後面` }];
+  await openApp();
+  await transcribe(page);
+  const audio = page.getByLabel('原始音檔');
+  await expect(audio).toBeVisible();
+
+  await page.getByRole('button', { name: '從 05:05 開始播放' }).click();
+  await expect.poll(() => audio.evaluate(a => !(a as HTMLAudioElement).paused)).toBe(true);
+  const time = await audio.evaluate(a => (a as HTMLAudioElement).currentTime);
+  expect(time).toBeGreaterThanOrEqual(304.4);
+  expect(time).toBeLessThan(307);
+  await expect(page.locator('[data-active]')).toContainText('第1段開頭');
+  await audio.evaluate(a => (a as HTMLAudioElement).pause());
+});
+
+test('轉錄失敗的佔位段落沒有播放鈕', async ({ page, openApp, gemini }) => {
+  gemini.handler = chunk => (chunk === 1 ? serverError : [{ speaker: 'A', timestamp: '00:05', text: `第${chunk}段` }]);
+  await openApp();
+  await page.setInputFiles('input[type=file]', meetingWav());
+  await page.getByRole('button', { name: '開始轉錄' }).click();
+  await expect(page.getByRole('button', { name: /重試失敗的 1 段/ })).toBeVisible({ timeout: 60_000 });
+  // 失敗的佔位段落沒有播放鈕
+  await expect(page.getByRole('button', { name: /開始播放/ })).toHaveCount(2);
 });

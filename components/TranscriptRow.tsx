@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { Clock, User } from 'lucide-react';
+import { Clock, User, Play } from 'lucide-react';
 import { TranscriptSegment } from '../types';
 import { formatTime, parseTimeStringToSeconds } from '../utils/audioUtils';
 import AutoResizeTextarea from './AutoResizeTextarea';
@@ -8,15 +8,32 @@ interface TranscriptRowProps {
   segment: TranscriptSegment;
   index: number;
   onUpdate: (index: number, field: keyof TranscriptSegment, value: string | number) => void;
+  /** 從這段開始播放；沒有可播放的音檔時不給 */
+  onPlay?: (seconds: number) => void;
+  /** 播放到這一段 */
+  isActive?: boolean;
 }
 
 /**
  * 逐字稿的一段。用 memo 包起來：打字時只有正在編輯的這一段重新繪製，長會議也不會卡。
  * onUpdate 必須是穩定的函式，否則每次都會重繪。
  */
-const TranscriptRow: React.FC<TranscriptRowProps> = ({ segment, index, onUpdate }) => (
-  <div className="flex gap-4 group items-start hover:bg-slate-50/50 transition-colors">
-    <div className="flex-shrink-0 w-24 sm:w-28 text-right pt-2">
+const TranscriptRow: React.FC<TranscriptRowProps> = ({ segment, index, onUpdate, onPlay, isActive = false }) => (
+  <div
+    data-active={isActive || undefined}
+    className={`flex gap-4 group items-start transition-colors rounded ${isActive ? 'bg-indigo-50' : 'hover:bg-slate-50/50'}`}
+  >
+    <div className="flex-shrink-0 w-28 sm:w-32 text-right pt-2 flex items-center justify-end gap-1">
+      {onPlay && segment.failedChunk === undefined && (
+        <button
+          type="button"
+          onClick={() => onPlay(segment.startTimeSeconds)}
+          aria-label={`從 ${formatTime(segment.startTimeSeconds)} 開始播放`}
+          className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+        >
+          <Play className="w-3 h-3 fill-current" />
+        </button>
+      )}
       <div className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded border border-transparent focus-within:border-indigo-300 focus-within:bg-white focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
         <Clock className="w-3 h-3 text-slate-400" />
         <input
