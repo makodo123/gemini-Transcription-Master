@@ -59,15 +59,38 @@ export const getChunkCount = (pcm: Int16Array, chunkDurationSeconds: number): nu
 export const getChunkCountForDuration = (durationSeconds: number, chunkDurationSeconds: number): number =>
   Math.max(1, Math.ceil((durationSeconds * TRANSCRIBE_SAMPLE_RATE - MIN_TAIL_FRAMES) / (chunkDurationSeconds * TRANSCRIBE_SAMPLE_RATE)));
 
+export interface ChunkWindow {
+  /** 實際送出的音訊範圍（秒），含前後重疊 */
+  audioStart: number;
+  audioEnd: number;
+  /** 這段負責的範圍（秒）：開始時間落在這裡的句子才算這段的；最後一段到結尾 */
+  ownStart: number;
+  ownEnd: number;
+}
+
+/**
+ * 第 i 段的範圍。每段前後多帶 overlap 秒，剛好在切點講到一半的句子才能被完整聽到；
+ * 句子依開始時間歸屬到負責的那一段，避免重複。
+ */
+export const chunkWindow = (totalSeconds: number, chunkIndex: number, chunkDurationSeconds: number, overlapSeconds = 0): ChunkWindow => {
+  const isLast = chunkIndex === getChunkCountForDuration(totalSeconds, chunkDurationSeconds) - 1;
+  const ownStart = chunkIndex * chunkDurationSeconds;
+  const ownEnd = isLast ? Infinity : (chunkIndex + 1) * chunkDurationSeconds;
+  return {
+    audioStart: Math.max(0, ownStart - overlapSeconds),
+    audioEnd: Math.min(totalSeconds, (isLast ? totalSeconds : ownEnd) + overlapSeconds),
+    ownStart,
+    ownEnd,
+  };
+};
+
 /**
  * Wraps one chunk of the decoded PCM in a WAV header.
  * Necessary because we need to send a valid file format to Gemini.
  */
-export const pcmChunkToWav = (pcm: Int16Array, chunkIndex: number, chunkDurationSeconds: number): Blob => {
-  const chunkFrames = chunkDurationSeconds * TRANSCRIBE_SAMPLE_RATE;
-  let end = (chunkIndex + 1) * chunkFrames;
-  if (pcm.length - end < MIN_TAIL_FRAMES) end = pcm.length;
-  const data = pcm.subarray(chunkIndex * chunkFrames, end);
+export const pcmChunkToWav = (pcm: Int16Array, chunkIndex: number, chunkDurationSeconds: number, overlapSeconds = 0): Blob => {
+  const range = chunkWindow(pcm.length / TRANSCRIBE_SAMPLE_RATE, chunkIndex, chunkDurationSeconds, overlapSeconds);
+  const data = pcm.subarray(Math.round(range.audioStart * TRANSCRIBE_SAMPLE_RATE), Math.round(range.audioEnd * TRANSCRIBE_SAMPLE_RATE));
   const dataBytes = data.length * 2;
 
   const header = new DataView(new ArrayBuffer(44));

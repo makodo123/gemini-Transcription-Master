@@ -7,6 +7,7 @@ import {
   getChunkCount,
   getChunkCountForDuration,
   pcmChunkToWav,
+  chunkWindow,
   isMediaFile,
   TRANSCRIBE_SAMPLE_RATE,
 } from '../../utils/audioUtils';
@@ -122,7 +123,7 @@ describe('pcmChunkToWav', () => {
   };
 
   it('產生 16kHz 單聲道 16-bit 的 WAV 標頭', async () => {
-    const pcm = new Int16Array(TRANSCRIBE_SAMPLE_RATE * 2).fill(1234);
+    const pcm = new Int16Array(TRANSCRIBE_SAMPLE_RATE * 3).fill(1234);
     const wav = await readWav(pcmChunkToWav(pcm, 0, 1));
     expect(wav).toMatchObject({
       riff: 'RIFF', wave: 'WAVE', fmt: 'fmt ', data: 'data',
@@ -132,11 +133,26 @@ describe('pcmChunkToWav', () => {
   });
 
   it('切出指定的那一段', async () => {
-    const pcm = new Int16Array(TRANSCRIBE_SAMPLE_RATE * 3);
+    const pcm = new Int16Array(TRANSCRIBE_SAMPLE_RATE * 3.5);
     pcm.fill(7, TRANSCRIBE_SAMPLE_RATE, TRANSCRIBE_SAMPLE_RATE * 2);
     const wav = await readWav(pcmChunkToWav(pcm, 1, 1));
     expect(wav.firstSample).toBe(7);
     expect(wav.dataBytes).toBe(TRANSCRIBE_SAMPLE_RATE * 2);
+  });
+
+  it('結尾剛好 1 秒時，最後一段一路切到結尾（不漏掉最後一秒）', async () => {
+    const pcm = new Int16Array(TRANSCRIBE_SAMPLE_RATE * 3);
+    expect(getChunkCount(pcm, 1)).toBe(2);
+    const wav = await readWav(pcmChunkToWav(pcm, 1, 1));
+    expect(wav.dataBytes).toBe(TRANSCRIBE_SAMPLE_RATE * 2 * 2);
+  });
+
+  it('前後重疊：每段多帶 overlap 秒，第一段沒有前面、最後一段到結尾', async () => {
+    const pcm = new Int16Array(TRANSCRIBE_SAMPLE_RATE * 10);
+    const seconds = async (i: number) => (await readWav(pcmChunkToWav(pcm, i, 3, 1))).dataBytes / 2 / TRANSCRIBE_SAMPLE_RATE;
+    expect(await seconds(0)).toBe(4); // 0–4 秒
+    expect(await seconds(1)).toBe(5); // 2–7 秒
+    expect(await seconds(2)).toBe(5); // 5–10 秒（最後一段負責 6 秒到結尾）
   });
 
   it('結尾不到 1 秒併入最後一段', async () => {
@@ -164,5 +180,20 @@ describe('isMediaFile', () => {
     ['readme', ''],
   ])('%s 不能使用', (name, type) => {
     expect(isMediaFile(new File([], name, { type }))).toBe(false);
+  });
+});
+
+describe('chunkWindow', () => {
+  it('中間的段：送出前後各多 10 秒，只負責自己的 5 分鐘', () => {
+    expect(chunkWindow(1200, 1, 300, 10)).toEqual({ audioStart: 290, audioEnd: 610, ownStart: 300, ownEnd: 600 });
+  });
+
+  it('第一段沒有前面的重疊；最後一段負責到結尾', () => {
+    expect(chunkWindow(1200, 0, 300, 10)).toEqual({ audioStart: 0, audioEnd: 310, ownStart: 0, ownEnd: 300 });
+    expect(chunkWindow(1200, 3, 300, 10)).toEqual({ audioStart: 890, audioEnd: 1200, ownStart: 900, ownEnd: Infinity });
+  });
+
+  it('結尾不到 1 秒併入最後一段時，最後一段也到結尾', () => {
+    expect(chunkWindow(600.5, 1, 300, 10)).toEqual({ audioStart: 290, audioEnd: 600.5, ownStart: 300, ownEnd: Infinity });
   });
 });

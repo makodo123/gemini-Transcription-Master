@@ -150,3 +150,25 @@ test('前面的段落比較晚完成時，正在編輯的段落不會被換掉',
   expect(await page.evaluate(() => (document.activeElement as HTMLTextAreaElement).value)).toBe('chunk2XY');
   expect(await transcriptTexts(page)).toEqual(['chunk0', 'chunk1', 'chunk2XY']);
 });
+
+test('段落交界：每段前後多送 10 秒，跨切點的句子只出現一次且完整', async ({ page, openApp, gemini }) => {
+  gemini.shiftTimestamps = false; // 這裡直接寫「從送出的音訊開頭算」的時間
+  gemini.handler = chunk => {
+    if (chunk === 0) return [ // 送出 0–310 秒
+      { speaker: 'A', timestamp: '00:10', text: '開場' },
+      { speaker: 'A', timestamp: '04:58', text: '我們下一步要討論預算的部分' }, // 298 秒，跨過 300 秒切點
+      { speaker: 'B', timestamp: '05:05', text: '好的沒問題那就開始吧' }, // 305 秒，屬於第 2 段
+    ];
+    if (chunk === 1) return [ // 送出 290–610 秒
+      { speaker: 'A', timestamp: '00:12', text: '要討論預算的部分' }, // 302 秒：只聽到後半句，時間也標晚了
+      { speaker: 'B', timestamp: '00:15', text: '好的沒問題那就開始吧' }, // 305 秒
+      { speaker: 'B', timestamp: '01:30', text: '第二段的內容' },
+    ];
+    return [{ speaker: 'A', timestamp: '00:30', text: '第三段的內容' }]; // 送出 590–660 秒
+  };
+  await openApp();
+  await transcribe(page);
+  expect(gemini.audioSeconds).toEqual({ 0: 310, 1: 320, 2: 70 });
+  expect(await transcriptTexts(page)).toEqual(['開場', '我們下一步要討論預算的部分', '好的沒問題那就開始吧', '第二段的內容', '第三段的內容']);
+  expect(await timeValues(page)).toEqual(['00:10', '04:58', '05:05', '06:20', '10:20']);
+});

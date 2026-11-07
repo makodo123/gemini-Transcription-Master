@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CHUNK_OVERLAP } from '../../constants';
 
 export { expect };
 
@@ -33,9 +34,23 @@ export const meetingWav = (seconds = 660): string => {
   return file;
 };
 
-/** 從送給 Gemini 的 WAV（base64）讀出音量，換算成第幾段 */
-const chunkOf = (base64: string) =>
-  Math.round(Buffer.from(base64, 'base64').readInt16LE(44 + 2 * 4000) / 32767 / 0.1) - 1;
+/** 從送給 Gemini 的 WAV（base64）讀出音量，換算成第幾段；讀中間的樣本，避開前後與相鄰段重疊的部分 */
+const chunkOf = (base64: string) => {
+  const wav = Buffer.from(base64, 'base64');
+  const middle = 44 + 2 * Math.floor((wav.length - 44) / 4);
+  return Math.round(wav.readInt16LE(middle) / 32767 / 0.1) - 1;
+};
+
+/**
+ * 真正的 Gemini 從送出的音訊開頭算時間，而第 2 段起前面多了 CHUNK_OVERLAP 秒。
+ * 測試裡的時間寫成「從這段負責範圍開頭算」比較直觀，送回前在這裡補上那幾秒。
+ */
+const shiftTimestamp = (timestamp: string, seconds: number) => {
+  const parts = timestamp.split(':').map(Number);
+  if (parts.some(Number.isNaN) || parts.length < 2) return timestamp;
+  const total = parts.reduce((sum, part) => sum * 60 + part, 0) + seconds;
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
 
 // ---------- 假的 Gemini API ----------
 
@@ -61,6 +76,10 @@ export class GeminiMock {
   listError: { error: { code: number; message: string; status: string } } | null = null;
   /** 這些模型會回 404（模擬已停用） */
   retired: string[] = [];
+  /** 每段送出的音訊長度（秒） */
+  readonly audioSeconds: Record<number, number> = {};
+  /** false：handler 回傳的時間已是「從送出的音訊開頭算」，不再補上重疊秒數 */
+  shiftTimestamps = true;
   handler: (chunk: number) => GeminiReply | Promise<GeminiReply> =
     chunk => [{ speaker: '講者 1', timestamp: '00:05', text: `第${chunk}段` }];
 }
@@ -105,16 +124,19 @@ export const test = base.extend<{ gemini: GeminiMock; dialogs: Dialogs; openApp:
           return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify(error) });
         }
         const body = JSON.parse(route.request().postData() ?? '{}');
-        const chunk = chunkOf(body.contents[0].parts[0].inlineData.data);
+        const audio = body.contents[0].parts[0].inlineData.data;
+        const chunk = chunkOf(audio);
         mock.requests.push(chunk);
+        mock.audioSeconds[chunk] = (Buffer.from(audio, 'base64').length - 44) / 2 / 16000;
         const reply = await mock.handler(chunk);
         if (reply === 'hang') return; // 不回應
         if ('error' in reply) {
           return route.fulfill({ status: reply.error.code, contentType: 'application/json', body: JSON.stringify(reply) });
         }
+        const shifted = chunk > 0 && mock.shiftTimestamps ? reply.map(s => ({ ...s, timestamp: shiftTimestamp(s.timestamp, CHUNK_OVERLAP) })) : reply;
         return route.fulfill({
           contentType: 'application/json',
-          body: JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify(reply) }] } }] }),
+          body: JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify(shifted) }] } }] }),
         });
       }
       return route.abort(); // 其他外部資源（字型等）不載入，測試結果才穩定

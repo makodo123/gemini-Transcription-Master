@@ -1,11 +1,12 @@
 import { useState, useRef, useMemo, useCallback } from 'react';
-import { decodeAudio, getChunkCount, pcmChunkToWav, formatTime, TRANSCRIBE_SAMPLE_RATE } from '../utils/audioUtils';
+import { decodeAudio, getChunkCount, pcmChunkToWav, chunkWindow, formatTime, TRANSCRIBE_SAMPLE_RATE } from '../utils/audioUtils';
+import { keepOwnedSegments, removeBoundaryDuplicates } from '../utils/chunkBoundary';
 import { transcribeChunk, MODEL_NAME, getActiveModel, requestLog } from '../services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats } from '../types';
 import { saveProgress, loadProgress, clearProgress } from '../utils/progressStorage';
 import { parseGeminiError, parseAudioError, ErrorType } from '../utils/errorHandling';
 import { saveSpeedHistory } from '../utils/speedHistory';
-import { CHUNK_DURATION, MAX_CONCURRENCY } from '../constants';
+import { CHUNK_DURATION, CHUNK_OVERLAP, MAX_CONCURRENCY } from '../constants';
 
 export type TranscribeMode = 'start' | 'retryFailed' | 'restart';
 export interface PerfReport { summary: string; details: string }
@@ -208,7 +209,9 @@ export const useTranscription = (file: File | null, apiKey: string) => {
         setTranscripts(prev => {
           // 片段完成順序不固定，依時間排序後再顯示（sort 為穩定排序，同段內順序不變）；
           // 以 prev 為基礎，保留使用者在轉錄途中做的編輯
-          const updated = [...prev, ...segments.map(withId)].sort((a, b) => a.startTimeSeconds - b.startTimeSeconds);
+          const sorted = [...prev, ...segments.map(withId)].sort((a, b) => a.startTimeSeconds - b.startTimeSeconds);
+          // 切點附近前後兩段都轉到的同一句只留一次
+          const updated = removeBoundaryDuplicates(sorted, CHUNK_DURATION);
           if (!progressClosedRef.current) {
             saveProgress(file.name, file.size, updated, completedList, totalChunks);
           }
@@ -252,13 +255,16 @@ export const useTranscription = (file: File | null, apiKey: string) => {
           const startTimeOffset = i * CHUNK_DURATION;
 
           try {
-            const chunkBlob = pcmChunkToWav(pcm, i, CHUNK_DURATION);
+            // 前後各多帶 CHUNK_OVERLAP 秒；模型標的時間從送出的音訊開頭算起
+            const range = chunkWindow(pcm.length / TRANSCRIBE_SAMPLE_RATE, i, CHUNK_DURATION, CHUNK_OVERLAP);
+            const chunkBlob = pcmChunkToWav(pcm, i, CHUNK_DURATION, CHUNK_OVERLAP);
             // 使用带重试的转录函数
-            const newSegments = await transcribeChunk(chunkBlob, apiKey, i, startTimeOffset, { maxRetries: 3, onRateLimited, signal });
+            const newSegments = await transcribeChunk(chunkBlob, apiKey, i, range.audioStart, { maxRetries: 3, onRateLimited, signal });
             // 已停止：結果不寫入，這段之後續傳會再送
             if (signal.aborted) return;
             onChunkSucceeded();
-            addSegments(newSegments, i);
+            // 重疊部分的句子歸前後段負責
+            addSegments(keepOwnedSegments(newSegments, range.ownStart, range.ownEnd), i);
           } catch (err) {
             if (signal.aborted) return;
             console.error(err);
