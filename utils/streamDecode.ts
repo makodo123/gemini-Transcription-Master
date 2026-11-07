@@ -238,7 +238,7 @@ const decodeWav = async (file: File, options: StreamDecodeOptions): Promise<Int1
 
 // ---------- 壓縮格式共用：音框表 + AudioDecoder ----------
 
-interface FrameTable {
+export interface FrameTable {
   config: AudioDecoderConfig;
   offsets: number[];
   sizes: number[];
@@ -361,7 +361,8 @@ const MP3_SCAN_BLOCK = 4 * 1024 * 1024;
 /** 開頭這個範圍內找不到 MP3 音框，就不是 MP3（避免把其他格式整個逐位元組掃過） */
 const MP3_SYNC_SEARCH_BYTES = 64 * 1024;
 
-const scanMp3 = async (file: File): Promise<FrameTable | null> => {
+/** 掃描 MP3 音框（也供單元測試使用） */
+export const scanMp3 = async (file: File): Promise<FrameTable | null> => {
   let pos = 0;
   const id3 = await readBytes(file, 0, 10);
   if (fourCC(id3, 0).startsWith('ID3')) {
@@ -505,7 +506,8 @@ const readMp4Moov = async (file: File): Promise<Uint8Array | null> => {
   return null;
 };
 
-const scanMp4 = async (file: File): Promise<FrameTable | null> => {
+/** 解析 MP4/M4A 的音框表（也供單元測試使用） */
+export const scanMp4 = async (file: File): Promise<FrameTable | null> => {
   const b = await readMp4Moov(file);
   if (!b) return null;
   const view = new DataView(b.buffer);
