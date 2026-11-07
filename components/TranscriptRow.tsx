@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { Clock, User, Play } from 'lucide-react';
+import { Clock, User, Play, Trash2 } from 'lucide-react';
 import { TranscriptSegment } from '../types';
 import { formatTime, parseTimeStringToSeconds } from '../utils/audioUtils';
 import AutoResizeTextarea from './AutoResizeTextarea';
@@ -12,13 +12,14 @@ interface TranscriptRowProps {
   onPlay?: (seconds: number) => void;
   /** 播放到這一段 */
   isActive?: boolean;
+  onDelete?: (index: number) => void;
 }
 
 /**
  * 逐字稿的一段。用 memo 包起來：打字時只有正在編輯的這一段重新繪製，長會議也不會卡。
  * onUpdate 必須是穩定的函式，否則每次都會重繪。
  */
-const TranscriptRow: React.FC<TranscriptRowProps> = ({ segment, index, onUpdate, onPlay, isActive = false }) => (
+const TranscriptRow: React.FC<TranscriptRowProps> = ({ segment, index, onUpdate, onPlay, isActive = false, onDelete }) => (
   <div
     data-active={isActive || undefined}
     className={`flex gap-4 group items-start transition-colors rounded ${isActive ? 'bg-indigo-50' : 'hover:bg-slate-50/50'}`}
@@ -70,6 +71,17 @@ const TranscriptRow: React.FC<TranscriptRowProps> = ({ segment, index, onUpdate,
           className="text-xs font-bold text-slate-600 tracking-wide bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-400 focus:outline-none transition-colors w-full max-w-[200px]"
           placeholder="說話者"
         />
+        {onDelete && segment.failedChunk === undefined && (
+          // 桌機滑過才出現；手機沒有滑過，一直顯示
+          <button
+            type="button"
+            onClick={() => onDelete(index)}
+            aria-label="刪除這一段"
+            className="ml-auto p-1 rounded text-slate-300 hover:text-red-600 hover:bg-red-50 transition-colors sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
       <AutoResizeTextarea
         value={segment.text}

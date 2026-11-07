@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useMemo } from 'react';
-import { FileText, FileOutput, FileDown, Loader2, Copy, Check, Users } from 'lucide-react';
+import { FileText, FileOutput, FileDown, Loader2, Copy, Check, Users, Undo2 } from 'lucide-react';
 import { TranscriptSegment } from '../types';
 import TranscriptRow from './TranscriptRow';
 import SpeakerPanel from './SpeakerPanel';
@@ -15,6 +15,10 @@ interface TranscriptPanelProps {
   onIncludeTimestampsChange: (value: boolean) => void;
   onRenameSpeaker: (from: string, to: string) => void;
   onUpdateSegment: (index: number, field: keyof TranscriptSegment, value: string | number) => void;
+  onDeleteSegment: (index: number) => void;
+  /** 最近一次可以復原的動作說明 */
+  undoLabel: string | null;
+  onUndo: () => void;
   onCopy: () => void;
   onDownloadTxt: () => void;
   onDownloadSrt: () => void;
@@ -23,7 +27,7 @@ interface TranscriptPanelProps {
 /** 逐字稿結果：工具列（改講者、複製、下載）與每一段的編輯欄 */
 const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
   transcripts, audioUrl, isBusy, speakers, includeTimestamps, copyNotice,
-  onIncludeTimestampsChange, onRenameSpeaker, onUpdateSegment, onCopy, onDownloadTxt, onDownloadSrt,
+  onIncludeTimestampsChange, onRenameSpeaker, onUpdateSegment, onDeleteSegment, undoLabel, onUndo, onCopy, onDownloadTxt, onDownloadSrt,
 }) => {
   const [showSpeakerPanel, setShowSpeakerPanel] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -114,6 +118,15 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
             className="w-full h-9 basis-full"
           />
         )}
+        {undoLabel && (
+          <div role="status" className="basis-full flex items-center gap-3 text-sm text-slate-600">
+            <span className="truncate">{undoLabel}</span>
+            <button onClick={onUndo} className="shrink-0 flex items-center gap-1 text-indigo-600 hover:text-indigo-800 font-medium">
+              <Undo2 className="w-4 h-4" />
+              復原
+            </button>
+          </div>
+        )}
       </div>
 
       {showSpeakerPanel && <SpeakerPanel speakers={speakers} onRename={onRenameSpeaker} />}
@@ -127,6 +140,7 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
             onUpdate={onUpdateSegment}
             onPlay={canPlay ? playFrom : undefined}
             isActive={idx === activeIndex}
+            onDelete={onDeleteSegment}
           />
         ))}
 

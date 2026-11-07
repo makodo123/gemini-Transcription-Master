@@ -9,6 +9,14 @@ import { saveSpeedHistory } from '../utils/speedHistory';
 import { CHUNK_DURATION, CHUNK_OVERLAP, MAX_CONCURRENCY } from '../constants';
 
 export type TranscribeMode = 'start' | 'retryFailed' | 'restart';
+
+/** 可以復原的編輯：只記下改了什麼，復原時只把那部分改回來，不影響之後的其他修改 */
+export type UndoEntry =
+  | { kind: 'delete'; segment: TranscriptSegment; label: string }
+  | { kind: 'rename'; ids: string[]; from: string; to: string; label: string };
+
+const MAX_UNDO = 20;
+const preview = (text: string) => (text.length > 12 ? `${text.slice(0, 12)}…` : text);
 export interface PerfReport { summary: string; details: string }
 
 // 每一段逐字稿的穩定 id，讓列表在插入新段落、重新排序時不會把輸入框對錯段落。
@@ -56,6 +64,10 @@ export const useTranscription = (file: File | null, apiKey: string) => {
   const [transcripts, setTranscripts] = useState<TranscriptSegment[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [perfReport, setPerfReport] = useState<PerfReport | null>(null);
+  const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
+  // 讓穩定的 callback（useCallback）也能讀到最新的逐字稿
+  const transcriptsRef = useRef(transcripts);
+  transcriptsRef.current = transcripts;
 
   // 每一輪轉錄各用一個 AbortController：停止後馬上重新開始，上一輪還沒結束的工作也不會混進新的一輪
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -69,6 +81,7 @@ export const useTranscription = (file: File | null, apiKey: string) => {
   const reset = () => {
     setStatus(AppStatus.IDLE);
     setTranscripts([]);
+    setUndoStack([]);
     setErrorMsg(null);
     setPerfReport(null);
   };
@@ -88,8 +101,33 @@ export const useTranscription = (file: File | null, apiKey: string) => {
     return [...counts].map(([name, count]) => ({ name, count }));
   }, [transcripts]);
 
+  const pushUndo = (entry: UndoEntry) => setUndoStack(stack => [...stack.slice(-(MAX_UNDO - 1)), entry]);
+
   const renameSpeaker = (from: string, to: string) => {
-    setTranscripts(prev => prev.map(t => t.speaker === from && t.failedChunk === undefined ? { ...t, speaker: to } : t));
+    const ids = transcripts.filter(t => t.speaker === from && t.failedChunk === undefined).map(t => t.id!);
+    if (ids.length === 0) return;
+    setTranscripts(prev => prev.map(t => ids.includes(t.id!) ? { ...t, speaker: to } : t));
+    pushUndo({ kind: 'rename', ids, from, to, label: `已將「${from}」改名為「${to}」（${ids.length} 段）` });
+  };
+
+  // 穩定的函式，逐字稿每一段（memo）不會因此重繪
+  const deleteSegment = useCallback((index: number) => {
+    const segment = transcriptsRef.current[index];
+    if (!segment) return;
+    setTranscripts(prev => prev.filter(t => t !== segment));
+    setUndoStack(stack => [...stack.slice(-(MAX_UNDO - 1)), { kind: 'delete', segment, label: `已刪除「${preview(segment.text)}」` }]);
+  }, []);
+
+  /** 復原最近一次刪除或改名；之後做的其他修改保留 */
+  const undo = () => {
+    const entry = undoStack[undoStack.length - 1];
+    if (!entry) return;
+    setUndoStack(stack => stack.slice(0, -1));
+    if (entry.kind === 'delete') {
+      setTranscripts(prev => [...prev, entry.segment].sort((a, b) => a.startTimeSeconds - b.startTimeSeconds));
+    } else {
+      setTranscripts(prev => prev.map(t => entry.ids.includes(t.id!) && t.speaker === entry.to ? { ...t, speaker: entry.from } : t));
+    }
   };
 
   // 用 useCallback 保持同一個函式，逐字稿每一段（memo）才不會在打字時全部重繪
@@ -122,6 +160,7 @@ export const useTranscription = (file: File | null, apiKey: string) => {
     let minConcurrency = MAX_CONCURRENCY;
     setStatus(AppStatus.PREPARING);
     setErrorMsg(null);
+    setUndoStack([]);
 
     const retryChunks = mode === 'retryFailed'
       ? new Set(transcripts.flatMap(t => t.failedChunk !== undefined ? [t.failedChunk] : []))
@@ -348,6 +387,7 @@ export const useTranscription = (file: File | null, apiKey: string) => {
 
   return {
     status, isBusy, stats, transcripts, errorMsg, perfReport, failedCount, speakers,
-    start, stop, reset, updateSegment, renameSpeaker,
+    lastUndo: undoStack[undoStack.length - 1] ?? null,
+    start, stop, reset, updateSegment, renameSpeaker, deleteSegment, undo,
   };
 };

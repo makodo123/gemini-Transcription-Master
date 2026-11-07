@@ -217,6 +217,9 @@ function App() {
             onIncludeTimestampsChange={setIncludeTimestamps}
             onRenameSpeaker={transcription.renameSpeaker}
             onUpdateSegment={transcription.updateSegment}
+            onDeleteSegment={transcription.deleteSegment}
+            undoLabel={transcription.lastUndo?.label ?? null}
+            onUndo={transcription.undo}
             onCopy={copyAll}
             onDownloadTxt={() => downloadFile('txt', () => toPlainText(exportable(), includeTimestamps))}
             onDownloadSrt={() => downloadFile('srt', () => generateSrtContent(exportable()))}

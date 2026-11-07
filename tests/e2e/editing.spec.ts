@@ -1,4 +1,4 @@
-import { test, expect, transcribe, timeInputs, timeValues, meetingWav, serverError } from './helpers';
+import { test, expect, transcribe, timeInputs, timeValues, meetingWav, serverError, transcriptTexts } from './helpers';
 
 test('改時間後依時間重新排序；無效的時間會還原', async ({ page, openApp, gemini }) => {
   gemini.handler = () => [{ speaker: 'A', timestamp: '00:05', text: '開場' }, { speaker: 'B', timestamp: '01:00', text: '回應' }];
@@ -109,4 +109,61 @@ test('轉錄失敗的佔位段落沒有播放鈕', async ({ page, openApp, gemin
   await expect(page.getByRole('button', { name: /重試失敗的 1 段/ })).toBeVisible({ timeout: 60_000 });
   // 失敗的佔位段落沒有播放鈕
   await expect(page.getByRole('button', { name: /開始播放/ })).toHaveCount(2);
+});
+
+test.describe('刪除段落與復原', () => {
+  test.beforeEach(({ gemini }) => {
+    gemini.handler = chunk => [
+      { speaker: '講者 1', timestamp: '00:05', text: `第${chunk}段開頭` },
+      { speaker: '講者 2', timestamp: '01:00', text: `第${chunk}段雜音` },
+    ];
+  });
+
+  test('刪除一段後可以復原，之後做的其他修改不會被蓋掉', async ({ page, openApp }) => {
+    await openApp();
+    await transcribe(page);
+    await page.getByRole('button', { name: '刪除這一段' }).nth(1).click();
+    expect(await transcriptTexts(page)).not.toContain('第0段雜音');
+    await expect(page.getByRole('status')).toContainText('已刪除「第0段雜音」');
+
+    await page.locator('textarea').first().fill('改過的開頭');
+    await page.getByRole('button', { name: '復原' }).click();
+    expect(await transcriptTexts(page)).toEqual(['改過的開頭', '第0段雜音', '第1段開頭', '第1段雜音', '第2段開頭', '第2段雜音']);
+    await expect(page.getByRole('status')).toHaveCount(0);
+  });
+
+  test('連續刪除可以一步一步復原', async ({ page, openApp }) => {
+    await openApp();
+    await transcribe(page);
+    await page.getByRole('button', { name: '刪除這一段' }).first().click();
+    await page.getByRole('button', { name: '刪除這一段' }).first().click();
+    expect(await transcriptTexts(page)).toHaveLength(4);
+    await page.getByRole('button', { name: '復原' }).click();
+    expect((await transcriptTexts(page))[0]).toBe('第0段雜音');
+    await page.getByRole('button', { name: '復原' }).click();
+    expect(await transcriptTexts(page)).toHaveLength(6);
+  });
+
+  test('講者改名合併後可以復原，只改回被改名的那幾段', async ({ page, openApp }) => {
+    await openApp();
+    await transcribe(page);
+    const speakers = () => page.getByLabel('說話者', { exact: true }).evaluateAll(is => is.map(i => (i as HTMLInputElement).value));
+    await page.getByRole('button', { name: '重新命名講者' }).click();
+    await page.getByLabel('講者 2 的新名稱').fill('講者 1');
+    await page.getByLabel('講者 2 的新名稱').press('Enter');
+    expect(new Set(await speakers())).toEqual(new Set(['講者 1']));
+    await expect(page.getByRole('status')).toContainText('已將「講者 2」改名為「講者 1」（3 段）');
+
+    await page.getByRole('button', { name: '復原' }).click();
+    expect(await speakers()).toEqual(['講者 1', '講者 2', '講者 1', '講者 2', '講者 1', '講者 2']);
+  });
+
+  test('轉錄失敗的佔位段落不能刪除（才能重試）', async ({ page, openApp, gemini }) => {
+    gemini.handler = chunk => (chunk === 1 ? serverError : [{ speaker: 'A', timestamp: '00:05', text: `第${chunk}段` }]);
+    await openApp();
+    await page.setInputFiles('input[type=file]', meetingWav());
+    await page.getByRole('button', { name: '開始轉錄' }).click();
+    await expect(page.getByRole('button', { name: /重試失敗的 1 段/ })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '刪除這一段' })).toHaveCount(2);
+  });
 });
