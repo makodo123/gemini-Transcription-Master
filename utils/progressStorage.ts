@@ -1,4 +1,5 @@
-import { TranscriptSegment } from "../types";
+import { TranscriptSegment, SpeakerHint } from "../types";
+import { validSegments } from "./segmentValidation";
 
 interface SavedProgress {
   fileName: string;
@@ -9,6 +10,8 @@ interface SavedProgress {
   completedChunks: number[];
   totalChunks: number;
   timestamp: number;
+  /** 這份逐字稿開始轉錄時用的講者名單；續傳沿用，名字才不會前後不一 */
+  speakers?: SpeakerHint[];
 }
 
 const STORAGE_KEY = 'transcription_progress';
@@ -22,7 +25,8 @@ export const saveProgress = (
   fileSize: number,
   transcripts: TranscriptSegment[],
   completedChunks: number[],
-  totalChunks: number
+  totalChunks: number,
+  speakers: SpeakerHint[] = []
 ): void => {
   try {
     const progress: SavedProgress = {
@@ -32,7 +36,8 @@ export const saveProgress = (
       processedChunks: completedChunks.length,
       completedChunks,
       totalChunks,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      speakers,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
   } catch (error) {
@@ -52,6 +57,12 @@ export const loadProgress = (
     if (!saved) return null;
 
     const progress: SavedProgress = JSON.parse(saved);
+    // 格式壞掉的進度無法續傳，直接清掉
+    if (!progress || !validSegments(progress.transcripts) || !Number.isInteger(progress.totalChunks)
+      || typeof progress.timestamp !== 'number') {
+      clearProgress();
+      return null;
+    }
 
     // 检查是否是同一个文件
     if (progress.fileName !== fileName || progress.fileSize !== fileSize) {
@@ -68,6 +79,7 @@ export const loadProgress = (
     if (!Array.isArray(progress.completedChunks)) {
       progress.completedChunks = Array.from({ length: progress.processedChunks }, (_, i) => i);
     }
+    if (!Array.isArray(progress.speakers)) progress.speakers = [];
 
     return progress;
   } catch (error) {
@@ -83,8 +95,8 @@ export const peekProgress = (): Pick<SavedProgress, 'fileName' | 'fileSize' | 'p
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return null;
-    const progress: SavedProgress = JSON.parse(saved);
-    return loadProgress(progress.fileName, progress.fileSize);
+    const progress: SavedProgress | null = JSON.parse(saved);
+    return progress ? loadProgress(progress.fileName, progress.fileSize) : null;
   } catch (error) {
     console.error('Failed to read progress:', error);
     return null;

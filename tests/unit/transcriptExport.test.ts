@@ -31,3 +31,11 @@ describe('baseFileName', () => {
     expect(baseFileName(input)).toBe(expected);
   });
 });
+
+describe('講者欄空白', () => {
+  it('不輸出多餘的冒號', () => {
+    const blank = [{ speaker: '  ', timestamp: '', startTimeSeconds: 5, text: '只有內容' }];
+    expect(toPlainText(blank, true)).toBe('[00:05] 只有內容');
+    expect(toPlainText(blank, false)).toBe('只有內容');
+  });
+});

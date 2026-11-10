@@ -40,6 +40,13 @@ function App() {
   // 轉錄前填的講者，記在這台裝置上
   const [speakerHints, setSpeakerHints] = useState<SpeakerHint[]>(() => loadSpeakerHints());
   useEffect(() => saveSpeakerHints(speakerHints), [speakerHints]);
+  // 名單是上一場錄音留下來的（重新打開頁面、或換了新檔案）：提醒使用者確認是否還適用
+  const hasHintNames = (hints: SpeakerHint[]) => hints.some(h => h.name.trim());
+  const [hintsFromBefore, setHintsFromBefore] = useState(() => hasHintNames(speakerHints));
+  const changeSpeakerHints = (hints: SpeakerHint[]) => {
+    setSpeakerHints(hints);
+    setHintsFromBefore(false);
+  };
 
   const transcription = useTranscription(file, apiKey, speakerHints);
   // 原始音檔的網址，讓逐字稿可以點時間播放；換檔時釋放舊的
@@ -47,6 +54,8 @@ function App() {
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
   const { status, isBusy, transcripts, failedCount } = transcription;
   const hasUnexported = transcripts.length > 0 && transcripts !== exportedTranscripts;
+  // 逐字稿全部刪掉時還要能按「復原」，面板不能跟著消失
+  const showTranscriptPanel = transcripts.length > 0 || !!transcription.lastUndo;
   const pendingMatchesFile = !!(pendingProgress && file && pendingProgress.fileName === file.name && pendingProgress.fileSize === file.size);
 
   // Load API Key from local storage
@@ -157,6 +166,7 @@ function App() {
       return;
     }
     if (!confirmDiscard('換成新的檔案')) return;
+    if (file && hasHintNames(speakerHints)) setHintsFromBefore(true);
     setRestoredFrom(null);
     setFile(selected);
     transcription.reset();
@@ -185,6 +195,7 @@ function App() {
     : pendingMatchesFile ? '繼續轉錄' : '開始轉錄';
 
   const handleStart = () => {
+    setHintsFromBefore(false);
     if (startLabel !== '重新轉錄') {
       transcription.start('start');
     } else if (confirmDiscard('重新轉錄', '，並重新使用 API 額度')) {
@@ -242,13 +253,12 @@ function App() {
 
       <main className="w-full max-w-4xl space-y-6">
         {/* 上次自動保存的逐字稿；同一個檔案還有未完成的轉錄時，交給續傳提醒處理 */}
-        {savedTranscript && transcripts.length === 0 && !isBusy &&
+        {savedTranscript && !showTranscriptPanel && !isBusy &&
           !(pendingProgress && pendingProgress.fileName === savedTranscript.fileName && pendingProgress.fileSize === savedTranscript.fileSize) && (
           <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200 text-sm text-indigo-900 flex flex-wrap items-center gap-x-4 gap-y-2">
             <p className="flex-grow">
               找到上次的逐字稿：<span className="font-medium break-all">{savedTranscript.fileName}</span>
-              （{new Date(savedTranscript.savedAt).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}，共 {savedTranscript.transcripts.length} 段）。
-              打開後再選同一個音檔，就能邊聽邊校對。逐字稿只存在這台裝置的瀏覽器，7 天後自動刪除。
+              （{new Date(savedTranscript.savedAt).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}，共 {savedTranscript.transcripts.length} 段）。打開後再選同一個音檔，就能邊聽邊校對。逐字稿只存在這台裝置的瀏覽器，7 天後自動刪除。
             </p>
             <div className="flex gap-2">
               <button onClick={openSavedTranscript} className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium">打開</button>
@@ -271,7 +281,9 @@ function App() {
             pendingMatchesFile={pendingMatchesFile}
             fileError={fileError}
             speakerHints={speakerHints}
-            onSpeakerHintsChange={setSpeakerHints}
+            onSpeakerHintsChange={changeSpeakerHints}
+            speakerHintsFromBefore={hintsFromBefore}
+            speakerHintsApplyNextTime={transcripts.length > 0}
             onSelectFile={selectFile}
             onDiscardPending={discardPendingProgress}
             onStart={handleStart}
@@ -292,7 +304,7 @@ function App() {
           />
         </div>
 
-        {transcripts.length > 0 && (
+        {showTranscriptPanel && (
           <TranscriptPanel
             transcripts={transcripts}
             audioUrl={audioUrl}

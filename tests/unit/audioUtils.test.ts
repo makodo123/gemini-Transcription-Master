@@ -63,6 +63,11 @@ describe('generateSrtContent', () => {
     expect(cues.map(c => [c.index, c.start, c.text])).toEqual([[1, 5, 'A: 前面'], [2, 20, 'A: 後面']]);
   });
 
+  it('講者欄空白時只輸出內容', () => {
+    const cues = parseSrt(generateSrtContent([{ ...seg(5, '內容'), speaker: '' }]));
+    expect(cues[0].text).toBe('內容');
+  });
+
   it('顯示時間依字數估算：短句至少 1.5 秒，長句最多 7 秒', () => {
     const cues = parseSrt(generateSrtContent([seg(0, '好'), seg(100, '一'.repeat(20)), seg(200, '一'.repeat(100))]));
     expect(cues.map(c => c.end - c.start)).toEqual([1.5, 5, 7]);

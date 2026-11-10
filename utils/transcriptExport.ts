@@ -1,10 +1,13 @@
 import { TranscriptSegment } from '../types';
 import { formatTime } from './audioUtils';
 
+/** 「講者: 」前綴；講者欄是空的就只輸出內容，不留冒號 */
+export const speakerPrefix = (speaker: string) => (speaker.trim() ? `${speaker}: ` : '');
+
 /** 轉成純文字：每段一行，可選擇是否加上 [MM:SS] 時間 */
 export const toPlainText = (segments: TranscriptSegment[], includeTimestamps: boolean): string =>
   segments
-    .map(t => `${includeTimestamps ? `[${formatTime(t.startTimeSeconds)}] ` : ''}${t.speaker}: ${t.text}`)
+    .map(t => `${includeTimestamps ? `[${formatTime(t.startTimeSeconds)}] ` : ''}${speakerPrefix(t.speaker)}${t.text}`)
     .join('\n');
 
 /** 下載檔名沿用音檔名稱（去掉副檔名） */

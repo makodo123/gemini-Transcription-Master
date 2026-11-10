@@ -184,6 +184,10 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
           );
         })}
 
+        {transcripts.length === 0 && !isBusy && (
+          <p className="py-8 text-center text-sm text-slate-500">逐字稿是空的。按上方的「復原」可以找回刪掉的段落。</p>
+        )}
+
         {isBusy && (
            <div className="flex justify-center py-8">
              <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />

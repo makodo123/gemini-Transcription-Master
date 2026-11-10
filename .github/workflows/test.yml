@@ -6,6 +6,10 @@ on:
     branches-ignore: [gh-pages]
   pull_request:
 
+# 只需要讀取原始碼
+permissions:
+  contents: read
+
 jobs:
   unit:
     name: Typecheck & unit tests

@@ -85,7 +85,7 @@ const StatusCard: React.FC<StatusCardProps> = ({
            </div>
          )}
          {errorMsg && (
-           <p className="text-xs text-red-500 mt-2">{errorMsg}</p>
+           <p role="alert" className="text-sm text-red-700 mt-2">{errorMsg}</p>
          )}
          {perfReport && (
            <div className="mt-3 text-sm text-slate-600">

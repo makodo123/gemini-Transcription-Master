@@ -1,4 +1,5 @@
 import { TranscriptSegment } from '../types';
+import { validSegments } from './segmentValidation';
 
 /** 自動保存的最後一份逐字稿：瀏覽器當掉或關掉頁面後還能找回 */
 export interface SavedTranscript {
@@ -27,11 +28,14 @@ export const loadLastTranscript = (): SavedTranscript | null => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return null;
     const parsed: SavedTranscript = JSON.parse(saved);
-    if (Date.now() - parsed.savedAt > MAX_AGE_MS) {
+    const transcripts = validSegments(parsed?.transcripts);
+    // 過期或格式壞掉：刪掉，不再提示找回
+    if (!transcripts || typeof parsed.fileName !== 'string' || typeof parsed.fileSize !== 'number'
+      || typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > MAX_AGE_MS) {
       clearLastTranscript();
       return null;
     }
-    return Array.isArray(parsed.transcripts) && parsed.transcripts.length > 0 ? parsed : null;
+    return transcripts.length > 0 ? parsed : null;
   } catch (error) {
     console.error('Failed to load transcript:', error);
     return null;

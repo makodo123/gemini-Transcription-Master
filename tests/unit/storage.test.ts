@@ -67,3 +67,24 @@ describe('speedHistory', () => {
     expect(loadSpeedHistory()).toBeNull();
   });
 });
+
+describe('progressStorage 講者名單與壞掉的資料', () => {
+  it('保存這份逐字稿用的講者名單；舊版進度沒有名單時當作空的', () => {
+    saveProgress('a.mp3', 1, segments, [0], 3, [{ name: '面試官', role: '提問的人' }]);
+    expect(loadProgress('a.mp3', 1)!.speakers).toEqual([{ name: '面試官', role: '提問的人' }]);
+    const old = JSON.parse(localStorage.getItem('transcription_progress')!);
+    delete old.speakers;
+    localStorage.setItem('transcription_progress', JSON.stringify(old));
+    expect(loadProgress('a.mp3', 1)!.speakers).toEqual([]);
+  });
+
+  it.each([
+    ['逐字稿不是陣列', { fileName: 'a.mp3', fileSize: 1, timestamp: Date.now(), transcripts: 'oops', totalChunks: 3 }],
+    ['段數不是整數', { fileName: 'a.mp3', fileSize: 1, timestamp: Date.now(), transcripts: [], totalChunks: 'x' }],
+    ['整份是 null', null],
+  ])('%s：當作沒有進度', (_, value) => {
+    localStorage.setItem('transcription_progress', JSON.stringify(value));
+    expect(loadProgress('a.mp3', 1)).toBeNull();
+    expect(peekProgress()).toBeNull();
+  });
+});

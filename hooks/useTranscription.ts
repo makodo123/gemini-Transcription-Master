@@ -73,6 +73,8 @@ export const useTranscription = (file: File | null, apiKey: string, speakerHints
 
   // 每一輪轉錄各用一個 AbortController：停止後馬上重新開始，上一輪還沒結束的工作也不會混進新的一輪
   const abortControllerRef = useRef<AbortController | null>(null);
+  // 目前這份逐字稿開始轉錄時用的講者名單；重試失敗段落時沿用，名字才不會前後不一
+  const transcriptHintsRef = useRef<SpeakerHint[]>([]);
   // 轉錄完成後設為 true，避免延後執行的 state 更新又把進度寫回 localStorage
   const progressClosedRef = useRef<boolean>(false);
 
@@ -130,6 +132,7 @@ export const useTranscription = (file: File | null, apiKey: string, speakerHints
 
   /** 打開自動保存的逐字稿 */
   const restore = (segments: TranscriptSegment[]) => {
+    transcriptHintsRef.current = [];
     setTranscripts(segments.map(withId));
     setStatus(AppStatus.IDLE);
     setErrorMsg(null);
@@ -173,8 +176,8 @@ export const useTranscription = (file: File | null, apiKey: string, speakerHints
     const { signal } = controller;
     // API Key 無效或配額用盡時整輪暫停，記下原因
     let fatalError: string | null = null;
-    // 這一輪用開始時填的講者；轉錄中改了名單，下一輪才套用
-    const hints = cleanSpeakerHints(speakerHints);
+    // 新的轉錄用現在填的講者；續傳、重試沿用這份逐字稿當初的名單（下面決定）
+    let hints = mode === 'retryFailed' ? transcriptHintsRef.current : cleanSpeakerHints(speakerHints);
     progressClosedRef.current = false;
     requestLog.length = 0;
     setPerfReport(null);
@@ -238,6 +241,8 @@ export const useTranscription = (file: File | null, apiKey: string, speakerHints
       // 2. Plan chunks (each chunk is wrapped as WAV only when it is sent)
       const totalChunks = getChunkCount(pcm, CHUNK_DURATION);
       const resuming = !!(savedProgress && savedProgress.transcripts.length > 0 && savedProgress.totalChunks === totalChunks);
+      if (resuming) hints = savedProgress!.speakers ?? [];
+      transcriptHintsRef.current = hints;
       const allChunks = Array.from({ length: totalChunks }, (_, i) => i);
       const completed = new Set<number>(
         retryChunks ? allChunks.filter(i => !retryChunks.has(i))
@@ -287,7 +292,7 @@ export const useTranscription = (file: File | null, apiKey: string, speakerHints
           // 切點附近前後兩段都轉到的同一句只留一次
           const updated = removeBoundaryDuplicates(sorted, CHUNK_DURATION);
           if (!progressClosedRef.current) {
-            saveProgress(file.name, file.size, updated, completedList, totalChunks);
+            saveProgress(file.name, file.size, updated, completedList, totalChunks, hints);
           }
           return updated;
         });

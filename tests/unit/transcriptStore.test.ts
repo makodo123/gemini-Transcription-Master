@@ -42,3 +42,17 @@ describe('transcriptStore 保存期限', () => {
     expect(localStorage.getItem('transcription_last')).toBeNull();
   });
 });
+
+describe('transcriptStore 壞掉的資料', () => {
+  const put = (value: unknown) => localStorage.setItem('transcription_last', JSON.stringify(value));
+  it.each([
+    ['段落是 null', { fileName: 'a.mp3', fileSize: 1, savedAt: Date.now(), transcripts: [null] }],
+    ['時間不是數字', { fileName: 'a.mp3', fileSize: 1, savedAt: Date.now(), transcripts: [{ speaker: 'A', text: 't', startTimeSeconds: 'x' }] }],
+    ['沒有檔名', { savedAt: Date.now(), transcripts: segments }],
+    ['整份是 null', null],
+  ])('%s：當作沒有，並清掉', (_, value) => {
+    put(value);
+    expect(loadLastTranscript()).toBeNull();
+    expect(localStorage.getItem('transcription_last')).toBeNull();
+  });
+});

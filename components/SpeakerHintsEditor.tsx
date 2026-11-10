@@ -5,6 +5,10 @@ import { SpeakerHint } from '../types';
 interface SpeakerHintsEditorProps {
   hints: SpeakerHint[];
   disabled: boolean;
+  /** 名單是上一場錄音留下的 */
+  fromBefore?: boolean;
+  /** 已有逐字稿：改了名單只影響下一次轉錄 */
+  applyNextTime?: boolean;
   onChange: (hints: SpeakerHint[]) => void;
 }
 
@@ -17,7 +21,7 @@ const EXAMPLES = [
  * 轉錄前填講者（選填）。每 5 分鐘一段是分開辨識的，只給編號時各段可能把兩人對調；
  * 給了名字和角色，Gemini 會依角色判斷是誰。
  */
-const SpeakerHintsEditor: React.FC<SpeakerHintsEditorProps> = ({ hints, disabled, onChange }) => {
+const SpeakerHintsEditor: React.FC<SpeakerHintsEditorProps> = ({ hints, disabled, fromBefore = false, applyNextTime = false, onChange }) => {
   const [open, setOpen] = useState(() => hints.some(h => h.name.trim()));
   // 還沒填過時先給兩列空白
   const rows = hints.length > 0 ? hints : [{ name: '', role: '' }, { name: '', role: '' }];
@@ -47,6 +51,19 @@ const SpeakerHintsEditor: React.FC<SpeakerHintsEditorProps> = ({ hints, disabled
       <p className="text-xs text-slate-600 mb-3">
         填上每個人的名字和角色，Gemini 會依角色分辨誰在說話，比較不會把兩人對調，逐字稿也會直接用這些名字。不填就標成「講者 1」「講者 2」。
       </p>
+      {fromBefore && (
+        <div role="status" className="mb-3 p-2 rounded bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-center gap-2">
+          <span className="flex-grow">這是上次轉錄時填的講者。換了錄音請確認是否還適用，不適用就清空或修改。</span>
+          <button type="button" onClick={() => onChange([])} className="shrink-0 px-2 py-1 rounded bg-white border border-amber-300 hover:bg-amber-100 font-medium">
+            清空
+          </button>
+        </div>
+      )}
+      {applyNextTime && (
+        <p className="mb-3 text-xs text-slate-500">
+          改了名單會在下次轉錄時套用，不會改到目前的逐字稿；要改目前的名字，請用下方逐字稿的「重新命名講者」。
+        </p>
+      )}
       <ul className="space-y-2">
         {rows.map((hint, i) => (
           <li key={i} className="flex items-center gap-2">

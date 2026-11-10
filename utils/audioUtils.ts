@@ -224,6 +224,6 @@ export const generateSrtContent = (segments: TranscriptSegment[]): string => {
 
     return `${index + 1}
 ${formatSrtTime(start)} --> ${formatSrtTime(end)}
-${segment.speaker}: ${segment.text}`;
+${segment.speaker.trim() ? `${segment.speaker}: ` : ''}${segment.text}`;
   }).join('\n\n') + '\n';
 };

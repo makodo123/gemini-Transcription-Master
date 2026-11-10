@@ -3,5 +3,6 @@
 @tailwind utilities;
 
 body {
-  font-family: 'Noto Sans TC', sans-serif;
+  /* 用系統內建的中文字型，不向外部載入字型 */
+  font-family: system-ui, -apple-system, 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans TC', sans-serif;
 }
