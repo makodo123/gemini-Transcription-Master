@@ -1,8 +1,9 @@
 import { useState, useRef, useMemo, useCallback } from 'react';
 import { decodeAudio, getChunkCount, pcmChunkToWav, chunkWindow, formatTime, TRANSCRIBE_SAMPLE_RATE } from '../utils/audioUtils';
 import { keepOwnedSegments, removeBoundaryDuplicates } from '../utils/chunkBoundary';
-import { transcribeChunk, MODEL_NAME, getActiveModel, requestLog } from '../services/geminiService';
-import { AppStatus, TranscriptSegment, ProcessingStats } from '../types';
+import { transcribeChunk, MODEL_NAME, getActiveModel, requestLog, cleanSpeakerHints } from '../services/geminiService';
+import { AppStatus, TranscriptSegment, ProcessingStats, SpeakerHint } from '../types';
+import { SpeakerChange, swapSpeakersInChunk, applySpeakerChanges, revertSpeakerChanges } from '../utils/speakerSwap';
 import { saveProgress, loadProgress, clearProgress } from '../utils/progressStorage';
 import { parseGeminiError, parseAudioError, ErrorType } from '../utils/errorHandling';
 import { saveSpeedHistory } from '../utils/speedHistory';
@@ -13,7 +14,8 @@ export type TranscribeMode = 'start' | 'retryFailed' | 'restart';
 /** 可以復原的編輯：只記下改了什麼，復原時只把那部分改回來，不影響之後的其他修改 */
 export type UndoEntry =
   | { kind: 'delete'; segment: TranscriptSegment; label: string }
-  | { kind: 'rename'; ids: string[]; from: string; to: string; label: string };
+  | { kind: 'rename'; ids: string[]; from: string; to: string; label: string }
+  | { kind: 'swap'; changes: SpeakerChange[]; label: string };
 
 const MAX_UNDO = 20;
 const preview = (text: string) => (text.length > 12 ? `${text.slice(0, 12)}…` : text);
@@ -58,7 +60,7 @@ const buildPerfReport = (totalMs: number, decodeMs: number, minConcurrency: numb
 /**
  * 轉錄流程與它的狀態：讀取音檔、分段並行送出、重試、續傳、停止，以及逐字稿的編輯。
  */
-export const useTranscription = (file: File | null, apiKey: string) => {
+export const useTranscription = (file: File | null, apiKey: string, speakerHints: SpeakerHint[] = []) => {
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
   const [stats, setStats] = useState<ProcessingStats>({ totalChunks: 0, processedChunks: 0, currentAction: '' });
   const [transcripts, setTranscripts] = useState<TranscriptSegment[]>([]);
@@ -110,6 +112,14 @@ export const useTranscription = (file: File | null, apiKey: string) => {
     pushUndo({ kind: 'rename', ids, from, to, label: `已將「${from}」改名為「${to}」（${ids.length} 段）` });
   };
 
+  /** 把第 chunk 段（每 5 分鐘一段）裡的兩位講者互換：分段辨識偶爾會把兩人對調 */
+  const swapSpeakers = (chunk: number, a: string, b: string) => {
+    const changes = swapSpeakersInChunk(transcripts, chunk, a, b);
+    if (changes.length === 0) return;
+    setTranscripts(prev => applySpeakerChanges(prev, changes));
+    pushUndo({ kind: 'swap', changes, label: `已對調 ${formatTime(chunk * CHUNK_DURATION)} 起這段的「${a}」和「${b}」（${changes.length} 段）` });
+  };
+
   // 穩定的函式，逐字稿每一段（memo）不會因此重繪
   const deleteSegment = useCallback((index: number) => {
     const segment = transcriptsRef.current[index];
@@ -134,6 +144,8 @@ export const useTranscription = (file: File | null, apiKey: string) => {
     setUndoStack(stack => stack.slice(0, -1));
     if (entry.kind === 'delete') {
       setTranscripts(prev => [...prev, entry.segment].sort((a, b) => a.startTimeSeconds - b.startTimeSeconds));
+    } else if (entry.kind === 'swap') {
+      setTranscripts(prev => revertSpeakerChanges(prev, entry.changes));
     } else {
       setTranscripts(prev => prev.map(t => entry.ids.includes(t.id!) && t.speaker === entry.to ? { ...t, speaker: entry.from } : t));
     }
@@ -161,6 +173,8 @@ export const useTranscription = (file: File | null, apiKey: string) => {
     const { signal } = controller;
     // API Key 無效或配額用盡時整輪暫停，記下原因
     let fatalError: string | null = null;
+    // 這一輪用開始時填的講者；轉錄中改了名單，下一輪才套用
+    const hints = cleanSpeakerHints(speakerHints);
     progressClosedRef.current = false;
     requestLog.length = 0;
     setPerfReport(null);
@@ -319,7 +333,7 @@ export const useTranscription = (file: File | null, apiKey: string) => {
             const range = chunkWindow(pcm.length / TRANSCRIBE_SAMPLE_RATE, i, CHUNK_DURATION, CHUNK_OVERLAP);
             const chunkBlob = pcmChunkToWav(pcm, i, CHUNK_DURATION, CHUNK_OVERLAP);
             // 使用带重试的转录函数
-            const newSegments = await transcribeChunk(chunkBlob, apiKey, i, range.audioStart, { maxRetries: 3, onRateLimited, signal });
+            const newSegments = await transcribeChunk(chunkBlob, apiKey, i, range.audioStart, { maxRetries: 3, onRateLimited, signal, speakers: hints });
             // 已停止：結果不寫入，這段之後續傳會再送
             if (signal.aborted) return;
             onChunkSucceeded();
@@ -409,6 +423,6 @@ export const useTranscription = (file: File | null, apiKey: string) => {
   return {
     status, isBusy, stats, transcripts, errorMsg, perfReport, failedCount, speakers,
     lastUndo: undoStack[undoStack.length - 1] ?? null,
-    start, stop, reset, restore, updateSegment, renameSpeaker, deleteSegment, undo,
+    start, stop, reset, restore, updateSegment, renameSpeaker, swapSpeakers, deleteSegment, undo,
   };
 };

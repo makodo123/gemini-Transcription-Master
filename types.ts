@@ -25,3 +25,10 @@ export enum AppStatus {
   ERROR = 'ERROR',
   STOPPED = 'STOPPED'
 }
+
+/** 轉錄前填的講者：名字與角色。讓 Gemini 依角色分辨誰在說話，不是照誰先開口編號 */
+export interface SpeakerHint {
+  name: string;
+  /** 角色或特徵，例如「提問的人」；可以空白 */
+  role: string;
+}

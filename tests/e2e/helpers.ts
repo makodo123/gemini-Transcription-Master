@@ -71,6 +71,8 @@ export class GeminiMock {
   readonly requests: number[] = [];
   /** 每次請求用的模型 */
   readonly models: string[] = [];
+  /** 每次請求給模型的指示 */
+  readonly prompts: string[] = [];
   /** 這組 API Key 列得出的模型；listError 設定時列模型會失敗 */
   available = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
   listError: { error: { code: number; message: string; status: string } } | null = null;
@@ -129,6 +131,7 @@ export const test = base.extend<{ gemini: GeminiMock; dialogs: Dialogs; openApp:
         const audio = body.contents[0].parts[0].inlineData.data;
         const chunk = chunkOf(audio);
         mock.requests.push(chunk);
+        mock.prompts.push(body.contents[0].parts[1]?.text ?? '');
         mock.audioSeconds[chunk] = (Buffer.from(audio, 'base64').length - 44) / 2 / 16000;
         const reply = await mock.handler(chunk);
         if (reply === 'hang') return; // 不回應

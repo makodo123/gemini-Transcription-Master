@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { getChunkCountForDuration, getAudioDuration, generateSrtContent, isMediaFile } from './utils/audioUtils';
-import { AppStatus, TranscriptSegment } from './types';
+import { AppStatus, TranscriptSegment, SpeakerHint } from './types';
 import ApiKeyModal from './components/ApiKeyModal';
 import AppHeader from './components/AppHeader';
 import UploadCard from './components/UploadCard';
@@ -12,6 +12,7 @@ import { clearProgress, peekProgress } from './utils/progressStorage';
 import { loadSpeedHistory } from './utils/speedHistory';
 import { toPlainText, baseFileName, downloadText } from './utils/transcriptExport';
 import { saveLastTranscript, loadLastTranscript, clearLastTranscript } from './utils/transcriptStore';
+import { loadSpeakerHints, saveSpeakerHints } from './utils/speakerHints';
 import { CHUNK_DURATION, MAX_CONCURRENCY } from './constants';
 
 const REPO_URL = 'https://github.com/makodo123/gemini-Transcription-Master';
@@ -36,7 +37,11 @@ function App() {
   // 最新選的檔案；讀長度期間又換檔時，舊檔的結果就不採用
   const selectedFileRef = useRef<File | null>(null);
 
-  const transcription = useTranscription(file, apiKey);
+  // 轉錄前填的講者，記在這台裝置上
+  const [speakerHints, setSpeakerHints] = useState<SpeakerHint[]>(() => loadSpeakerHints());
+  useEffect(() => saveSpeakerHints(speakerHints), [speakerHints]);
+
+  const transcription = useTranscription(file, apiKey, speakerHints);
   // 原始音檔的網址，讓逐字稿可以點時間播放；換檔時釋放舊的
   const audioUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
@@ -265,6 +270,8 @@ function App() {
             pendingProgress={pendingProgress}
             pendingMatchesFile={pendingMatchesFile}
             fileError={fileError}
+            speakerHints={speakerHints}
+            onSpeakerHintsChange={setSpeakerHints}
             onSelectFile={selectFile}
             onDiscardPending={discardPendingProgress}
             onStart={handleStart}
@@ -295,6 +302,7 @@ function App() {
             copyNotice={copyNotice}
             onIncludeTimestampsChange={setIncludeTimestamps}
             onRenameSpeaker={transcription.renameSpeaker}
+            onSwapSpeakers={transcription.swapSpeakers}
             onUpdateSegment={transcription.updateSegment}
             onDeleteSegment={transcription.deleteSegment}
             undoLabel={transcription.lastUndo?.label ?? null}

@@ -12,6 +12,7 @@ vi.mock('@google/genai', () => ({
 
 const {
   transcribeChunk, requestLog, getActiveModel, resetModelSelection, pickFallbackModel, thinkingConfigFor, validateApiKey, MODEL_NAME,
+  buildTranscriptionPrompt, cleanSpeakerHints, OTHER_SPEAKER,
 } = await import('../../services/geminiService');
 const { parseGeminiError, ErrorType } = await import('../../utils/errorHandling');
 
@@ -179,5 +180,36 @@ describe('validateApiKey', () => {
   it('網路等其他問題無法判斷', async () => {
     listModels.mockRejectedValue(new TypeError('Failed to fetch'));
     await expect(validateApiKey('maybe')).resolves.toBe('unknown');
+  });
+});
+
+describe('講者名單', () => {
+  it('沒有名單時照舊用「講者 1」編號', () => {
+    expect(buildTranscriptionPrompt()).toContain('講者 1, 講者 2');
+  });
+
+  it('有名單時列出名字與角色，並要求依角色判斷、不照誰先開口', () => {
+    const prompt = buildTranscriptionPrompt([{ name: '面試官', role: '提問的人' }, { name: '我', role: '' }]);
+    expect(prompt).toContain('- 面試官：提問的人');
+    expect(prompt).toMatch(/- 我\n/);
+    expect(prompt).toContain('不要照誰先開口來分配名字');
+    expect(prompt).toContain(`填「${OTHER_SPEAKER}」`);
+    expect(prompt).not.toContain('講者 1, 講者 2');
+  });
+
+  it('整理名單：去掉空白、沒有名字的列與重複的名字', () => {
+    expect(cleanSpeakerHints([
+      { name: ' 面試官 ', role: ' 提問的人 ' },
+      { name: '', role: '沒有名字' },
+      { name: '面試官', role: '重複' },
+      { name: '我', role: '' },
+    ])).toEqual([{ name: '面試官', role: '提問的人' }, { name: '我', role: '' }]);
+  });
+
+  it('送出的請求帶著名單', async () => {
+    generateContent.mockResolvedValue(reply([]));
+    await transcribeChunk(audio, 'key', 0, 0, { speakers: [{ name: '面試官', role: '提問的人' }] });
+    const parts = generateContent.mock.calls[0][0].contents.parts;
+    expect(parts[1].text).toContain('- 面試官：提問的人');
   });
 });

@@ -1,5 +1,5 @@
 import { GoogleGenAI, ThinkingConfig, ThinkingLevel, Type } from "@google/genai";
-import { TranscriptSegment } from "../types";
+import { TranscriptSegment, SpeakerHint } from "../types";
 import { blobToBase64, parseTimeStringToSeconds } from "../utils/audioUtils";
 import { isRateLimitError, isModelNotFoundError, parseGeminiError, ErrorType } from "../utils/errorHandling";
 
@@ -95,7 +95,45 @@ interface TranscribeOptions {
   onRateLimited?: () => void;
   /** 使用者按下停止時中斷請求與重試等待 */
   signal?: AbortSignal;
+  /** 轉錄前填的講者（已用 cleanSpeakerHints 整理過） */
+  speakers?: SpeakerHint[];
 }
+
+/** 聽不出是誰、或名單以外的人 */
+export const OTHER_SPEAKER = '其他講者';
+
+/** 去掉前後空白、沒填名字的列與重複的名字 */
+export const cleanSpeakerHints = (hints: SpeakerHint[]): SpeakerHint[] => {
+  const seen = new Set<string>();
+  return hints
+    .map(h => ({ name: h.name.trim(), role: h.role.trim() }))
+    .filter(h => h.name && !seen.has(h.name) && seen.add(h.name));
+};
+
+/**
+ * 給 Gemini 的指示。每 5 分鐘一段是分開辨識的；沒有講者名單時只能照誰先開口編號，
+ * 不同段落的「講者 1」可能是不同人。有名單時要它依角色判斷，各段才會一致。
+ */
+export const buildTranscriptionPrompt = (speakers: SpeakerHint[] = []): string => {
+  const speakerRule = speakers.length === 0
+    ? ['2. 辨識說話者 (例如: 講者 1, 講者 2)。']
+    : [
+        '2. 辨識說話者。這段錄音的講者如下，speaker 欄位請直接填這裡的名字：',
+        ...speakers.map(h => `   - ${h.name}${h.role ? `：${h.role}` : ''}`),
+        '   這段音訊是一段長錄音的其中一部分，開頭可能是任何一位在說話。請依每個人的角色、說話內容與聲音判斷是誰（例如誰在提問、誰在回答），不要照誰先開口來分配名字。',
+        `   聽不出是誰、或出現名單以外的人時，填「${OTHER_SPEAKER}」。`,
+      ];
+  return [
+    '你是一位專業的繁體中文逐字稿聽寫員。',
+    '請將這段音訊轉錄為逐字稿。',
+    '',
+    '要求：',
+    '1. 使用繁體中文 (Traditional Chinese)。',
+    ...speakerRule,
+    '3. 提供每一句話相對於音訊開頭的時間點 (格式: MM:SS)。',
+    '4. 如果音訊包含多種語言，請主要轉錄為中文，保留專有名詞原文。',
+  ].join('\n');
+};
 
 /** 等待指定時間；signal 中斷時立即結束 */
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
@@ -180,16 +218,7 @@ export const transcribeChunk = async (
     options?.signal?.throwIfAborted();
     log.uploadMB = +(base64Audio.length / 1e6).toFixed(1);
 
-    const prompt = `
-      你是一位專業的繁體中文逐字稿聽寫員。
-      請將這段音訊轉錄為逐字稿。
-      
-      要求：
-      1. 使用繁體中文 (Traditional Chinese)。
-      2. 辨識說話者 (例如: 講者 1, 講者 2)。
-      3. 提供每一句話相對於音訊開頭的時間點 (格式: MM:SS)。
-      4. 如果音訊包含多種語言，請主要轉錄為中文，保留專有名詞原文。
-    `;
+    const prompt = buildTranscriptionPrompt(options?.speakers);
 
     const generate = (model: string) => ai.models.generateContent({
       model,

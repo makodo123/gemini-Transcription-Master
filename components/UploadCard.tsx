@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Upload, FileAudio, Play, StopCircle, RefreshCw, Info, History, AlertCircle } from 'lucide-react';
-import { AppStatus } from '../types';
+import { AppStatus, SpeakerHint } from '../types';
+import SpeakerHintsEditor from './SpeakerHintsEditor';
 import { formatTime } from '../utils/audioUtils';
 import { CHUNK_DURATION } from '../constants';
 
@@ -25,6 +26,9 @@ interface UploadCardProps {
   pendingMatchesFile: boolean;
   /** 選到無法使用的檔案時的說明 */
   fileError: string | null;
+  /** 轉錄前填的講者 */
+  speakerHints: SpeakerHint[];
+  onSpeakerHintsChange: (hints: SpeakerHint[]) => void;
   onSelectFile: (file: File) => void;
   onDiscardPending: () => void;
   onStart: () => void;
@@ -35,7 +39,7 @@ interface UploadCardProps {
 /** 上傳區：未完成進度提醒、選檔（點擊、拖曳、鍵盤）、音檔資訊與開始／停止按鈕 */
 const UploadCard: React.FC<UploadCardProps> = ({
   file, fileDuration, fileEstimate, status, isBusy, canStart, startLabel, failedCount,
-  pendingProgress, pendingMatchesFile, fileError, onSelectFile, onDiscardPending, onStart, onRetryFailed, onStop,
+  pendingProgress, pendingMatchesFile, fileError, speakerHints, onSpeakerHintsChange, onSelectFile, onDiscardPending, onStart, onRetryFailed, onStop,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -150,6 +154,8 @@ const UploadCard: React.FC<UploadCardProps> = ({
            {fileError}
          </p>
        )}
+
+       <SpeakerHintsEditor hints={speakerHints} disabled={isBusy} onChange={onSpeakerHintsChange} />
 
        <p className="mt-3 text-xs text-slate-600 flex items-start gap-1.5">
          <Info className="w-3.5 h-3.5 mt-px shrink-0" />

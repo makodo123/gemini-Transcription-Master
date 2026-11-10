@@ -44,8 +44,7 @@ const SpeakerPanel: React.FC<SpeakerPanelProps> = ({ speakers, onRename }) => (
       重新命名講者
     </h4>
     <p className="text-xs text-slate-500 mb-3">
-      輸入新名稱後按 Enter，所有同名的段落會一起改。改成已有的名稱會合併成同一位講者。
-      每 5 分鐘一段的講者編號是分別判斷的，不同段落的「講者 1」不一定是同一人，改完請抽查。
+      輸入新名稱後按 Enter，所有同名的段落會一起改。改成已有的名稱會合併成同一位講者。每 5 分鐘一段的講者是分別判斷的，不同段落的「講者 1」不一定是同一人，改完請抽查；整段的兩人對調時，按那段開頭的「對調這段的講者」。
     </p>
     <ul className="space-y-2">
       {speakers.map(s => <SpeakerRow key={s.name} name={s.name} count={s.count} onRename={onRename} />)}

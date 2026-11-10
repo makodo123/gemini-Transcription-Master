@@ -3,6 +3,8 @@ import { FileText, FileOutput, FileDown, Loader2, Copy, Check, Users, Undo2 } fr
 import { TranscriptSegment } from '../types';
 import TranscriptRow from './TranscriptRow';
 import SpeakerPanel from './SpeakerPanel';
+import ChunkDivider from './ChunkDivider';
+import { chunkIndexOf, speakersByChunk } from '../utils/speakerSwap';
 
 interface TranscriptPanelProps {
   transcripts: TranscriptSegment[];
@@ -14,6 +16,8 @@ interface TranscriptPanelProps {
   copyNotice: string | null;
   onIncludeTimestampsChange: (value: boolean) => void;
   onRenameSpeaker: (from: string, to: string) => void;
+  /** 把某一段（每 5 分鐘）裡的兩位講者互換 */
+  onSwapSpeakers: (chunk: number, a: string, b: string) => void;
   onUpdateSegment: (index: number, field: keyof TranscriptSegment, value: string | number) => void;
   onDeleteSegment: (index: number) => void;
   /** 最近一次可以復原的動作說明 */
@@ -27,7 +31,7 @@ interface TranscriptPanelProps {
 /** 逐字稿結果：工具列（改講者、複製、下載）與每一段的編輯欄 */
 const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
   transcripts, audioUrl, isBusy, speakers, includeTimestamps, copyNotice,
-  onIncludeTimestampsChange, onRenameSpeaker, onUpdateSegment, onDeleteSegment, undoLabel, onUndo, onCopy, onDownloadTxt, onDownloadSrt,
+  onIncludeTimestampsChange, onRenameSpeaker, onSwapSpeakers, onUpdateSegment, onDeleteSegment, undoLabel, onUndo, onCopy, onDownloadTxt, onDownloadSrt,
 }) => {
   const [showSpeakerPanel, setShowSpeakerPanel] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -71,6 +75,10 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
     }
     return active;
   }, [transcripts, currentTime]);
+
+  // 每 5 分鐘一段的講者；超過一段、或這段有兩位以上講者時，在段落開頭放分隔線與「對調講者」
+  const chunkSpeakers = useMemo(() => speakersByChunk(transcripts), [transcripts]);
+  const multiChunk = transcripts.some(t => chunkIndexOf(t.startTimeSeconds) > 0);
 
   return (
     <div className="bg-white rounded-xl shadow-lg border border-slate-200">
@@ -155,17 +163,26 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
       {showSpeakerPanel && <SpeakerPanel speakers={speakers} onRename={onRenameSpeaker} />}
 
       <div className="divide-y divide-slate-100 p-4 space-y-4">
-        {transcripts.map((segment, idx) => (
-          <TranscriptRow
-            key={segment.id ?? idx}
-            segment={segment}
-            index={idx}
-            onUpdate={onUpdateSegment}
-            onPlay={canPlay ? playFrom : undefined}
-            isActive={idx === activeIndex}
-            onDelete={onDeleteSegment}
-          />
-        ))}
+        {transcripts.map((segment, idx) => {
+          const chunk = chunkIndexOf(segment.startTimeSeconds);
+          const firstOfChunk = idx === 0 || chunkIndexOf(transcripts[idx - 1].startTimeSeconds) !== chunk;
+          const speakersHere = chunkSpeakers.get(chunk) ?? [];
+          return (
+            <React.Fragment key={segment.id ?? idx}>
+              {firstOfChunk && (multiChunk || speakersHere.length >= 2) && (
+                <ChunkDivider chunk={chunk} speakers={speakersHere} onSwap={onSwapSpeakers} />
+              )}
+              <TranscriptRow
+                segment={segment}
+                index={idx}
+                onUpdate={onUpdateSegment}
+                onPlay={canPlay ? playFrom : undefined}
+                isActive={idx === activeIndex}
+                onDelete={onDeleteSegment}
+              />
+            </React.Fragment>
+          );
+        })}
 
         {isBusy && (
            <div className="flex justify-center py-8">
