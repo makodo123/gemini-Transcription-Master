@@ -53,7 +53,7 @@ export const parseGeminiError = (error: any): AppError => {
     return new AppError(
       ErrorType.INVALID_API_KEY,
       errorMessage,
-      'API 金鑰無效或已過期',
+      'API Key 無效或已過期',
       false
     );
   }

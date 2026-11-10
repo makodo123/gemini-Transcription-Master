@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { FileText, FileOutput, FileDown, Loader2, Copy, Check, Users, Undo2 } from 'lucide-react';
 import { TranscriptSegment } from '../types';
 import TranscriptRow from './TranscriptRow';
@@ -36,6 +36,24 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
   const [currentTime, setCurrentTime] = useState(0);
   const canPlay = !!audioUrl && playable;
 
+  // 手機只固定播放器與復原列（工具列太高）；桌機工具列也固定，播放器接在工具列下方
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [playerTop, setPlayerTop] = useState(0);
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+    const desktop = window.matchMedia('(min-width: 640px)');
+    const update = () => setPlayerTop(desktop.matches ? toolbar.offsetHeight : 0);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(toolbar);
+    desktop.addEventListener('change', update);
+    return () => {
+      observer.disconnect();
+      desktop.removeEventListener('change', update);
+    };
+  }, []);
+
   // 往前多播半秒，避免開頭的字被切掉
   const playFrom = useCallback((seconds: number) => {
     const audio = audioRef.current;
@@ -56,8 +74,8 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
 
   return (
     <div className="bg-white rounded-xl shadow-lg border border-slate-200">
-      {/* 工具列固定在畫面頂端，往下捲也能下載；整份逐字稿跟著頁面捲動，不再有第二層捲軸 */}
-      <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 rounded-t-xl flex justify-between items-center sticky top-0 z-10 flex-wrap gap-3">
+      {/* 桌機工具列固定在畫面頂端，往下捲也能下載；整份逐字稿跟著頁面捲動，不再有第二層捲軸 */}
+      <div ref={toolbarRef} className="px-6 py-4 border-b border-slate-100 bg-slate-50 rounded-t-xl flex justify-between items-center sm:sticky sm:top-0 z-20 flex-wrap gap-3">
         <h3 className="font-bold text-slate-700 flex items-center gap-2">
           <FileText className="w-5 h-5 text-indigo-600" />
           逐字稿結果
@@ -88,7 +106,7 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
               onChange={(e) => onIncludeTimestampsChange(e.target.checked)}
               className="accent-indigo-600 w-4 h-4 rounded border-slate-300 focus:ring-indigo-500"
             />
-            <span>TXT 與複製含時間戳記</span>
+            <span>含時間戳記（TXT、複製）</span>
           </label>
           <div className="h-5 w-px bg-slate-200 mx-1"></div>
           <button
@@ -106,6 +124,10 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
             下載 SRT 字幕
           </button>
         </div>
+      </div>
+
+      {(canPlay || undoLabel) && (
+        <div className="px-6 py-2 border-b border-slate-100 bg-slate-50 sticky z-10 space-y-2" style={{ top: playerTop }}>
         {audioUrl && playable && (
           <audio
             ref={audioRef}
@@ -115,11 +137,11 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
             aria-label="原始音檔"
             onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
             onError={() => setPlayable(false)}
-            className="w-full h-9 basis-full"
+            className="w-full h-9"
           />
         )}
         {undoLabel && (
-          <div role="status" className="basis-full flex items-center gap-3 text-sm text-slate-600">
+          <div role="status" className="flex items-center gap-3 text-sm text-slate-600">
             <span className="truncate">{undoLabel}</span>
             <button onClick={onUndo} className="shrink-0 flex items-center gap-1 text-indigo-600 hover:text-indigo-800 font-medium">
               <Undo2 className="w-4 h-4" />
@@ -127,7 +149,8 @@ const TranscriptPanel: React.FC<TranscriptPanelProps> = ({
             </button>
           </div>
         )}
-      </div>
+        </div>
+      )}
 
       {showSpeakerPanel && <SpeakerPanel speakers={speakers} onRename={onRenameSpeaker} />}
 

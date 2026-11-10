@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { saveLastTranscript, loadLastTranscript, clearLastTranscript } from '../../utils/transcriptStore';
 
 const segments = [{ id: 'a', speaker: 'A', timestamp: '00:01', startTimeSeconds: 1, text: '第一段' }];
 
 beforeEach(() => localStorage.clear());
+afterEach(() => vi.useRealTimers());
 
 describe('transcriptStore', () => {
   it('保存後可以讀回，包含檔名、大小與時間', () => {
@@ -26,5 +27,18 @@ describe('transcriptStore', () => {
     saveLastTranscript('meeting.mp3', 1000, segments);
     clearLastTranscript();
     expect(loadLastTranscript()).toBeNull();
+  });
+});
+
+describe('transcriptStore 保存期限', () => {
+  it('超過 7 天自動刪除', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    saveLastTranscript('meeting.mp3', 1000, segments);
+    vi.setSystemTime(new Date('2026-01-07T23:00:00Z'));
+    expect(loadLastTranscript()).not.toBeNull();
+    vi.setSystemTime(new Date('2026-01-08T00:00:01Z'));
+    expect(loadLastTranscript()).toBeNull();
+    expect(localStorage.getItem('transcription_last')).toBeNull();
   });
 });

@@ -28,7 +28,7 @@ test('重新命名講者：所有同名段落一起改，改成已有名稱會�
   await expect(page.getByText('6 段')).toBeVisible();
   await expect(page.getByText('3 段', { exact: true })).toBeVisible();
 
-  const speakers = () => page.getByLabel('說話者', { exact: true }).evaluateAll(is => is.map(i => (i as HTMLInputElement).value));
+  const speakers = () => page.getByLabel('講者', { exact: true }).evaluateAll(is => is.map(i => (i as HTMLInputElement).value));
   await page.getByLabel('講者 1 的新名稱').fill('王經理');
   await page.getByLabel('講者 1 的新名稱').press('Enter');
   expect((await speakers()).filter(s => s === '王經理')).toHaveLength(6);
@@ -147,7 +147,7 @@ test.describe('刪除段落與復原', () => {
   test('講者改名合併後可以復原，只改回被改名的那幾段', async ({ page, openApp }) => {
     await openApp();
     await transcribe(page);
-    const speakers = () => page.getByLabel('說話者', { exact: true }).evaluateAll(is => is.map(i => (i as HTMLInputElement).value));
+    const speakers = () => page.getByLabel('講者', { exact: true }).evaluateAll(is => is.map(i => (i as HTMLInputElement).value));
     await page.getByRole('button', { name: '重新命名講者' }).click();
     await page.getByLabel('講者 2 的新名稱').fill('講者 1');
     await page.getByLabel('講者 2 的新名稱').press('Enter');

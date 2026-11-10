@@ -18,6 +18,8 @@ interface UploadCardProps {
   status: AppStatus;
   isBusy: boolean;
   canStart: boolean;
+  /** 開始按鈕：重新轉錄會清掉目前的逐字稿，用次要樣式 */
+  startLabel: '開始轉錄' | '繼續轉錄' | '重新轉錄';
   failedCount: number;
   pendingProgress: PendingProgress | null;
   pendingMatchesFile: boolean;
@@ -32,7 +34,7 @@ interface UploadCardProps {
 
 /** 上傳區：未完成進度提醒、選檔（點擊、拖曳、鍵盤）、音檔資訊與開始／停止按鈕 */
 const UploadCard: React.FC<UploadCardProps> = ({
-  file, fileDuration, fileEstimate, status, isBusy, canStart, failedCount,
+  file, fileDuration, fileEstimate, status, isBusy, canStart, startLabel, failedCount,
   pendingProgress, pendingMatchesFile, fileError, onSelectFile, onDiscardPending, onStart, onRetryFailed, onStop,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
@@ -59,14 +61,14 @@ const UploadCard: React.FC<UploadCardProps> = ({
     <div className="md:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
        <h2 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
          <Upload className="w-5 h-5 text-indigo-600" />
-         上傳音訊檔案
+         上傳錄音
        </h2>
 
        {status === AppStatus.IDLE && pendingProgress && (
          <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900 flex items-start gap-2">
            <History className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />
            {pendingMatchesFile ? (
-             <p>這個檔案有上次未完成的轉錄（已完成 {pendingProgress.processedChunks} / {pendingProgress.totalChunks} 段），按「開始轉錄」可從中斷處繼續。</p>
+             <p>這個檔案有上次未完成的轉錄（已完成 {pendingProgress.processedChunks} / {pendingProgress.totalChunks} 段），按「繼續轉錄」可從中斷處接著做。</p>
            ) : (
              <div className="flex-grow">
                <p>
@@ -136,7 +138,7 @@ const UploadCard: React.FC<UploadCardProps> = ({
          ) : (
            <div className="text-slate-500 flex flex-col items-center">
              <Upload className="w-10 h-10 mb-2 text-slate-300" />
-             <span>點擊選擇，或把音檔拖曳到這裡</span>
+             <span>點擊選擇，或把音檔、影片拖曳到這裡</span>
              <span className="text-xs text-slate-400 mt-1">支援 MP3、M4A、WAV，以及 MP4、MOV 影片的聲音</span>
            </div>
          )}
@@ -149,7 +151,7 @@ const UploadCard: React.FC<UploadCardProps> = ({
          </p>
        )}
 
-       <p className="mt-3 text-xs text-slate-400 flex items-start gap-1.5">
+       <p className="mt-3 text-xs text-slate-600 flex items-start gap-1.5">
          <Info className="w-3.5 h-3.5 mt-px shrink-0" />
          音訊會在您的瀏覽器中切成每 {CHUNK_DURATION / 60} 分鐘一段，直接傳送給 Google Gemini 轉錄。
        </p>
@@ -179,17 +181,14 @@ const UploadCard: React.FC<UploadCardProps> = ({
                 onClick={onStart}
                 disabled={!canStart}
                 className={`px-6 py-2.5 rounded-lg font-medium flex items-center gap-2 transition-colors disabled:cursor-not-allowed ${
-                  // 完成後主要該做的是下載，重新轉錄會重花額度，改成次要樣式
-                  status === AppStatus.COMPLETED
+                  // 已有逐字稿時主要該做的是校對、下載，重新轉錄會重花額度，改成次要樣式
+                  startLabel === '重新轉錄'
                     ? 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:text-slate-400'
                     : 'bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white shadow-sm'
                 }`}
               >
-                {status === AppStatus.COMPLETED ? (
-                  <>重新轉錄<RefreshCw className="w-4 h-4" /></>
-                ) : (
-                  <>開始轉錄<Play className="w-4 h-4 fill-current" /></>
-                )}
+                {startLabel}
+                {startLabel === '重新轉錄' ? <RefreshCw className="w-4 h-4" /> : <Play className="w-4 h-4 fill-current" />}
               </button>
             </>
           )}

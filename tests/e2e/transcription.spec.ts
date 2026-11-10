@@ -1,6 +1,6 @@
 import {
   test, expect, meetingWav, transcribe, startButton, restartButton, transcriptTexts, timeValues,
-  progressInStorage, serverError, invalidKey, quotaExceeded, sleep,
+  progressInStorage, serverError, invalidKey, quotaExceeded, sleep, continueButton,
 } from './helpers';
 
 test('三段都成功：依時間排序、HH:MM:SS 換算正確、顯示白話摘要', async ({ page, openApp, gemini }) => {
@@ -43,7 +43,7 @@ test('API Key 無效：不重試、整輪暫停並說明下一步', async ({ pag
   await openApp();
   await page.setInputFiles('input[type=file]', meetingWav());
   await startButton(page).click();
-  await expect(page.getByText(/API 金鑰無效或已過期。請按右上角的「API Key」重新輸入/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/API Key 無效或已過期。請按右上角的「API Key」重新輸入後再試/)).toBeVisible({ timeout: 30_000 });
   await sleep(1000);
   expect(gemini.requests.length).toBeLessThanOrEqual(3); // 最多就是同時送出的那幾段
   await expect(startButton(page)).toBeEnabled();
@@ -97,17 +97,18 @@ test('停止後馬上重新開始：舊的一輪不再送請求，結果不重�
   expect(fetchTimes.filter(t => t > stopAt)).toHaveLength(3);
 });
 
-test('停止時說明進度已保存；再開始會問要不要續傳，並寫清楚「取消」的後果', async ({ page, openApp, gemini, dialogs }) => {
+test('停止時說明進度已保存；按「繼續轉錄」會問要不要續傳，並寫清楚「取消」的後果', async ({ page, openApp, gemini, dialogs }) => {
   gemini.handler = async chunk => (chunk === 0 ? [{ speaker: 'A', timestamp: '00:05', text: 'c0' }] : 'hang');
   await openApp();
   await page.setInputFiles('input[type=file]', meetingWav());
   await startButton(page).click();
   await expect(page.locator('textarea')).toHaveCount(1);
   await page.getByRole('button', { name: '停止轉錄' }).click();
-  await expect(page.getByText('已停止。已完成的段落都已保存')).toBeVisible();
+  await expect(page.getByText('已停止', { exact: true })).toBeVisible();
+  await expect(page.getByText('已完成的段落都已保存，按「繼續轉錄」可以從中斷處接著做。')).toBeVisible();
 
   dialogs.answer = false;
-  await startButton(page).click();
+  await continueButton(page).click();
   await expect.poll(() => dialogs.last()).toContain('按「取消」：捨棄先前的進度，從頭開始');
   expect(dialogs.last()).toContain('已完成 1 / 3 段');
   expect(dialogs.last()).toContain('按「確定」：從中斷處繼續');

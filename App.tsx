@@ -14,6 +14,8 @@ import { toPlainText, baseFileName, downloadText } from './utils/transcriptExpor
 import { saveLastTranscript, loadLastTranscript, clearLastTranscript } from './utils/transcriptStore';
 import { CHUNK_DURATION, MAX_CONCURRENCY } from './constants';
 
+const REPO_URL = 'https://github.com/makodo123/gemini-Transcription-Master';
+
 function App() {
   const [apiKey, setApiKey] = useState<string>('');
   const [isKeyModalOpen, setKeyModalOpen] = useState(false);
@@ -139,9 +141,9 @@ function App() {
     }
     setFileError(null);
     // 找回的逐字稿選回同一個音檔：保留逐字稿，只是加上播放器
+    // restoredFrom 留著：畫面仍要說明這是找回的逐字稿，下載也沿用原檔名
     if (restoredFrom && restoredFrom.fileName === selected.name && restoredFrom.fileSize === selected.size) {
       setFile(selected);
-      setRestoredFrom(null);
       setFileDuration(null);
       selectedFileRef.current = selected;
       getAudioDuration(selected).then(duration => {
@@ -172,9 +174,18 @@ function App() {
     // status 變化時重算：轉錄完成後速度紀錄會更新
   }, [fileDuration, status]);
 
+  // 開始按鈕：已有逐字稿（轉錄完成或找回的）是「重新轉錄」，有這個檔案的未完成進度是「繼續轉錄」
+  const startLabel = status === AppStatus.COMPLETED || (status === AppStatus.IDLE && transcripts.length > 0)
+    ? '重新轉錄'
+    : pendingMatchesFile ? '繼續轉錄' : '開始轉錄';
+
   const handleStart = () => {
-    if (status !== AppStatus.COMPLETED) transcription.start('start');
-    else if (confirmDiscard('重新轉錄', '，並重新使用 API 額度')) transcription.start('restart');
+    if (startLabel !== '重新轉錄') {
+      transcription.start('start');
+    } else if (confirmDiscard('重新轉錄', '，並重新使用 API 額度')) {
+      setRestoredFrom(null);
+      transcription.start('restart');
+    }
   };
 
   // 下載與複製都略過轉錄失敗的佔位段落
@@ -183,7 +194,8 @@ function App() {
   // 還有失敗的段落時先提醒
   const downloadFile = (extension: string, content: () => string) => {
     if (failedCount > 0 && !window.confirm(`還有 ${failedCount} 段轉錄失敗，下載的檔案會缺少這些段落。\n\n仍要下載嗎？`)) return;
-    downloadText(`${baseFileName(file?.name)}.${extension}`, content());
+    // 找回的逐字稿還沒選音檔時，沿用保存時的原檔名
+    downloadText(`${baseFileName(file?.name ?? restoredFrom?.fileName)}.${extension}`, content());
     setExportedTranscripts(transcripts);
   };
 
@@ -231,7 +243,7 @@ function App() {
             <p className="flex-grow">
               找到上次的逐字稿：<span className="font-medium break-all">{savedTranscript.fileName}</span>
               （{new Date(savedTranscript.savedAt).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}，共 {savedTranscript.transcripts.length} 段）。
-              打開後再選同一個音檔，就能邊聽邊校對。
+              打開後再選同一個音檔，就能邊聽邊校對。逐字稿只存在這台裝置的瀏覽器，7 天後自動刪除。
             </p>
             <div className="flex gap-2">
               <button onClick={openSavedTranscript} className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium">打開</button>
@@ -248,6 +260,7 @@ function App() {
             status={status}
             isBusy={isBusy}
             canStart={!!file && !!apiKey}
+            startLabel={startLabel}
             failedCount={failedCount}
             pendingProgress={pendingProgress}
             pendingMatchesFile={pendingMatchesFile}
@@ -267,6 +280,8 @@ function App() {
             perfReport={transcription.perfReport}
             hasApiKey={!!apiKey}
             hasFile={!!file}
+            hasTranscript={transcripts.length > 0}
+            restoredFileName={restoredFrom?.fileName ?? null}
           />
         </div>
 
@@ -290,6 +305,11 @@ function App() {
           />
         )}
       </main>
+
+      <footer className="w-full max-w-4xl mt-10 pt-4 border-t border-slate-200 text-sm text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
+        <a href={`${REPO_URL}#readme`} target="_blank" rel="noreferrer" className="hover:text-indigo-600 hover:underline">使用說明</a>
+        <a href={`${REPO_URL}/issues`} target="_blank" rel="noreferrer" className="hover:text-indigo-600 hover:underline">回報問題</a>
+      </footer>
     </div>
   );
 }

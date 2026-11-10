@@ -61,7 +61,11 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, onCl
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    // 點視窗外的暗色區域關閉
+    <div
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
       <div role="dialog" aria-modal="true" aria-labelledby="api-key-title" className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-fade-in">
         <div className="bg-indigo-600 px-6 py-4 flex justify-between items-center">
           <h3 id="api-key-title" className="text-white font-bold text-lg flex items-center gap-2">
@@ -75,7 +79,7 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, onCl
 
         <form onSubmit={handleSubmit} className="p-6">
           <p className="text-slate-600 text-sm mb-4">
-            請輸入您的 Google Gemini API Key。金鑰只會存在這台裝置的瀏覽器裡，只用來呼叫 Google Gemini 轉錄，不會傳到其他地方。
+            請輸入您的 Google Gemini API Key。API Key 只會存在這台裝置的瀏覽器裡，只用來呼叫 Google Gemini 轉錄，不會傳到其他地方。
             <br />
             <a
               href="https://aistudio.google.com/app/apikey"
@@ -100,7 +104,7 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, onCl
             <button
               type="button"
               onClick={() => setShowKey(!showKey)}
-              aria-label={showKey ? '隱藏金鑰' : '顯示金鑰'}
+              aria-label={showKey ? '隱藏 API Key' : '顯示 API Key'}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
             >
               {showKey ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
@@ -117,7 +121,7 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, onCl
                 className="px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors text-sm flex items-center gap-1.5"
               >
                 <Trash2 className="w-4 h-4" />
-                清除金鑰
+                清除 API Key
               </button>
             )}
             <button

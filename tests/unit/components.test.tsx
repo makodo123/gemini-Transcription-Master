@@ -96,19 +96,19 @@ describe('ApiKeyModal', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('沒有金鑰時不顯示「清除金鑰」', () => {
+  it('沒有金鑰時不顯示「清除 API Key」', () => {
     setup();
-    expect(screen.queryByRole('button', { name: /清除金鑰/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /清除 API Key/ })).toBeNull();
   });
 
-  it('清除金鑰前先確認', () => {
+  it('清除 API Key前先確認', () => {
     const { onClear } = setup('AIza-old');
     const confirm = vi.spyOn(window, 'confirm');
     confirm.mockReturnValueOnce(false);
-    fireEvent.click(screen.getByRole('button', { name: /清除金鑰/ }));
+    fireEvent.click(screen.getByRole('button', { name: /清除 API Key/ }));
     expect(onClear).not.toHaveBeenCalled();
     confirm.mockReturnValueOnce(true);
-    fireEvent.click(screen.getByRole('button', { name: /清除金鑰/ }));
+    fireEvent.click(screen.getByRole('button', { name: /清除 API Key/ }));
     expect(onClear).toHaveBeenCalled();
   });
 });
@@ -122,7 +122,7 @@ describe('TranscriptRow', () => {
 
   it('講者名稱照輸入顯示（不轉大寫）', () => {
     setup();
-    const speaker = screen.getByLabelText('說話者') as HTMLInputElement;
+    const speaker = screen.getByLabelText('講者') as HTMLInputElement;
     expect(speaker.value).toBe('John');
     expect(speaker.className).not.toContain('uppercase');
   });
@@ -148,7 +148,7 @@ describe('TranscriptRow', () => {
   it('修改文字與講者', () => {
     const onUpdate = setup();
     fireEvent.change(screen.getByLabelText('逐字稿內容'), { target: { value: '新內容' } });
-    fireEvent.change(screen.getByLabelText('說話者'), { target: { value: '王經理' } });
+    fireEvent.change(screen.getByLabelText('講者'), { target: { value: '王經理' } });
     expect(onUpdate).toHaveBeenCalledWith(4, 'text', '新內容');
     expect(onUpdate).toHaveBeenCalledWith(4, 'speaker', '王經理');
   });

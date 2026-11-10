@@ -20,7 +20,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({ apiKey, onOpenKeySettings }) => (
     </div>
     <button
       onClick={onOpenKeySettings}
-      aria-label={apiKey ? `API Key 設定（目前金鑰結尾 ${apiKey.slice(-4)}）` : '設定 API Key'}
+      aria-label={apiKey ? `API Key 設定（目前 API Key 結尾 ${apiKey.slice(-4)}）` : '設定 API Key'}
       className={`shrink-0 whitespace-nowrap flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg shadow-sm transition-colors ${
         apiKey
           ? 'bg-white border border-slate-200 hover:bg-slate-50 text-slate-700'

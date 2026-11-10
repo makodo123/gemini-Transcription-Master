@@ -10,7 +10,7 @@ describe('parseGeminiError', () => {
     const e = parseGeminiError(apiError(400, 'API key not valid. Please pass a valid API key.', 'INVALID_ARGUMENT'));
     expect(e.type).toBe(ErrorType.INVALID_API_KEY);
     expect(e.retryable).toBe(false);
-    expect(e.userMessage).toBe('API 金鑰無效或已過期');
+    expect(e.userMessage).toBe('API Key 無效或已過期');
   });
 
   it.each([

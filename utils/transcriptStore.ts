@@ -9,6 +9,8 @@ export interface SavedTranscript {
 }
 
 const STORAGE_KEY = 'transcription_last';
+// 共用電腦上不要一直留著別人的逐字稿
+const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const saveLastTranscript = (fileName: string, fileSize: number, transcripts: TranscriptSegment[]): void => {
   try {
@@ -25,6 +27,10 @@ export const loadLastTranscript = (): SavedTranscript | null => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return null;
     const parsed: SavedTranscript = JSON.parse(saved);
+    if (Date.now() - parsed.savedAt > MAX_AGE_MS) {
+      clearLastTranscript();
+      return null;
+    }
     return Array.isArray(parsed.transcripts) && parsed.transcripts.length > 0 ? parsed : null;
   } catch (error) {
     console.error('Failed to load transcript:', error);

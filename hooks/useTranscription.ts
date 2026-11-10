@@ -89,7 +89,7 @@ export const useTranscription = (file: File | null, apiKey: string) => {
   const stop = () => {
     abortControllerRef.current?.abort();
     setStatus(AppStatus.STOPPED);
-    setStats(prev => ({ ...prev, currentAction: '已停止。已完成的段落都已保存，按「開始轉錄」可從中斷處繼續' }));
+    setStats(prev => ({ ...prev, currentAction: '已停止', note: '已完成的段落都已保存，按「繼續轉錄」可以從中斷處接著做。' }));
   };
 
   // 依出現順序列出講者與段數（不含轉錄失敗的佔位段落）
@@ -192,7 +192,7 @@ export const useTranscription = (file: File | null, apiKey: string) => {
         setStats({
           totalChunks: savedProgress.totalChunks,
           processedChunks: savedProgress.processedChunks,
-          currentAction: '從上次中斷處繼續...'
+          currentAction: '從上次中斷處繼續…'
         });
       } else {
         clearProgress();
@@ -205,7 +205,7 @@ export const useTranscription = (file: File | null, apiKey: string) => {
 
     try {
       // 1. Decode
-      setStats({ totalChunks: 0, processedChunks: 0, currentAction: '正在讀取音檔...' });
+      setStats({ totalChunks: 0, processedChunks: 0, currentAction: '正在讀取音檔…' });
       const decodeStartedAt = performance.now();
       let decodePercent = -1;
       const pcm = await decodeAudio(file, {
@@ -214,7 +214,7 @@ export const useTranscription = (file: File | null, apiKey: string) => {
           const percent = Math.floor(fraction * 100);
           if (percent === decodePercent || signal.aborted) return;
           decodePercent = percent;
-          setStats({ totalChunks: 0, processedChunks: 0, currentAction: `正在讀取音檔 ${percent}%...` });
+          setStats({ totalChunks: 0, processedChunks: 0, currentAction: `正在讀取音檔 ${percent}%…` });
         }
       });
       decodeMs = performance.now() - decodeStartedAt;
@@ -236,23 +236,35 @@ export const useTranscription = (file: File | null, apiKey: string) => {
       const queue = allChunks.filter(i => !completed.has(i));
       const chunksThisRun = queue.length;
       let inFlight = 0;
+      // 這一輪已處理完的段數與開始時間，用來估算還要多久
+      let doneThisRun = 0;
+      const processingStartedAt = performance.now();
+
+      const remainingNote = () => {
+        if (doneThisRun === 0 || doneThisRun >= chunksThisRun) return undefined;
+        const msPerChunk = (performance.now() - processingStartedAt) / doneThisRun;
+        const seconds = ((chunksThisRun - doneThisRun) * msPerChunk) / 1000;
+        return `預估還要${seconds < 60 ? '不到 1 分鐘' : `約 ${Math.round(seconds / 60)} 分鐘`}`;
+      };
 
       const updateStats = () => {
         if (signal.aborted) return;
         setStats({
           totalChunks,
           processedChunks: completed.size + failed.size,
-          currentAction: `轉錄中：已完成 ${completed.size} / ${totalChunks} 段（同時處理 ${inFlight} 段）`
+          currentAction: `轉錄中：已完成 ${completed.size} / ${totalChunks} 段（同時處理 ${inFlight} 段）`,
+          note: remainingNote(),
         });
       };
 
-      setStats({ totalChunks, processedChunks: completed.size, currentAction: '準備開始轉錄...' });
+      setStats({ totalChunks, processedChunks: completed.size, currentAction: '準備開始轉錄…' });
       setStatus(AppStatus.PROCESSING);
 
       // 3. Process chunks with a small worker pool
       const addSegments = (segments: TranscriptSegment[], chunkIndex: number) => {
         const chunkFailed = segments.some(seg => seg.failedChunk !== undefined);
         (chunkFailed ? failed : completed).add(chunkIndex);
+        doneThisRun++;
         const completedList = [...completed];
         setTranscripts(prev => {
           // 片段完成順序不固定，依時間排序後再顯示（sort 為穩定排序，同段內順序不變）；
@@ -320,17 +332,17 @@ export const useTranscription = (file: File | null, apiKey: string) => {
 
             // API Key 無效、或重試後仍超過配額：後面的片段也只會失敗，整輪暫停
             if (appError.type === ErrorType.INVALID_API_KEY) {
-              fatalError = `${appError.userMessage}。請按右上角的「API Key」重新輸入，再按「開始轉錄」從中斷處繼續；已完成的段落都已保存。`;
+              fatalError = `${appError.userMessage}。請按右上角的「API Key」重新輸入後再試；已完成的段落都已保存。`;
               controller.abort();
               return;
             }
             if (appError.type === ErrorType.MODEL_UNAVAILABLE) {
-              fatalError = `${appError.userMessage}，網站需要更新才能繼續使用。請到 GitHub 專案頁回報問題；已完成的段落都已保存。`;
+              fatalError = `${appError.userMessage}，網站需要更新才能繼續使用。請按頁面最下方的「回報問題」通知我們；已完成的段落都已保存。`;
               controller.abort();
               return;
             }
             if (appError.type === ErrorType.QUOTA_EXCEEDED) {
-              fatalError = `${appError.userMessage}。已完成的段落都已保存，請稍後或換一組 API Key，再按「開始轉錄」從中斷處繼續。`;
+              fatalError = `${appError.userMessage}。請稍後再試，或換一組 API Key；已完成的段落都已保存。`;
               controller.abort();
               return;
             }

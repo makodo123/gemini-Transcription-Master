@@ -13,6 +13,8 @@ export interface ProcessingStats {
   totalChunks: number;
   processedChunks: number;
   currentAction: string;
+  /** 標題下方的補充說明（例如預估剩餘時間、停止後怎麼繼續） */
+  note?: string;
 }
 
 export enum AppStatus {

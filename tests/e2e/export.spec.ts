@@ -56,7 +56,7 @@ test('下載時略過轉錄失敗的段落，並先提醒', async ({ page, openA
 test('TXT 可以不含時間戳記', async ({ page, openApp }) => {
   await openApp();
   await transcribe(page);
-  await page.getByLabel('TXT 與複製含時間戳記').uncheck();
+  await page.getByLabel('含時間戳記（TXT、複製）').uncheck();
   expect(await download(page, '下載 TXT')).toBe('講者 1: 第0段\n講者 1: 第1段\n講者 1: 第2段');
 });
 

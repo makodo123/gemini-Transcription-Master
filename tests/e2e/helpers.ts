@@ -169,7 +169,7 @@ export const test = base.extend<{ gemini: GeminiMock; dialogs: Dialogs; openApp:
         if (progress) localStorage.setItem('transcription_progress', JSON.stringify(progress));
       }, { apiKey, progress });
       await page.reload();
-      await expect(page.getByText('上傳音訊檔案')).toBeVisible();
+      await expect(page.getByRole('heading', { name: '上傳錄音' })).toBeVisible();
     });
   },
 });
@@ -177,6 +177,7 @@ export const test = base.extend<{ gemini: GeminiMock; dialogs: Dialogs; openApp:
 // ---------- 常用操作 ----------
 
 export const startButton = (page: Page) => page.getByRole('button', { name: '開始轉錄' });
+export const continueButton = (page: Page) => page.getByRole('button', { name: '繼續轉錄' });
 export const restartButton = (page: Page) => page.getByRole('button', { name: '重新轉錄' });
 
 /** 選檔並轉錄到完成 */

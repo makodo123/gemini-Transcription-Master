@@ -62,22 +62,28 @@ const TranscriptRow: React.FC<TranscriptRowProps> = ({ segment, index, onUpdate,
     </div>
     <div className="flex-grow min-w-0">
       <div className="flex items-center gap-2 mb-1">
-        <User className="w-3 h-3 text-slate-400" />
-        <input
-          type="text"
-          value={segment.speaker}
-          onChange={(e) => onUpdate(index, 'speaker', e.target.value)}
-          aria-label="說話者"
-          className="text-xs font-bold text-slate-600 tracking-wide bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-400 focus:outline-none transition-colors w-full max-w-[200px]"
-          placeholder="說話者"
-        />
+        {segment.failedChunk !== undefined ? (
+          // 失敗的佔位段落沒有講者，不顯示可編輯的講者欄，避免被當成一位講者
+          <span className="text-xs font-bold text-amber-700">轉錄失敗</span>
+        ) : (
+          <>
+            <User className="w-3 h-3 text-slate-400" />
+            <input
+              type="text"
+              value={segment.speaker}
+              onChange={(e) => onUpdate(index, 'speaker', e.target.value)}
+              aria-label="講者"
+              className="text-xs font-bold text-slate-600 tracking-wide bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-400 focus:outline-none transition-colors w-full max-w-[200px]"
+              placeholder="講者"
+            />
+          </>
+        )}
         {onDelete && segment.failedChunk === undefined && (
-          // 桌機滑過才出現；手機沒有滑過，一直顯示
           <button
             type="button"
             onClick={() => onDelete(index)}
             aria-label="刪除這一段"
-            className="ml-auto p-1 rounded text-slate-300 hover:text-red-600 hover:bg-red-50 transition-colors sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
+            className="ml-auto p-1 rounded text-slate-300 hover:text-red-600 hover:bg-red-50 transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
