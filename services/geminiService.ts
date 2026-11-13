@@ -5,15 +5,31 @@ import { isRateLimitError, isModelNotFoundError, parseGeminiError, ErrorType } f
 
 export const MODEL_NAME = 'gemini-3-flash-preview';
 
-// 目前實際使用的模型：預設模型停用（例如預覽版下架）時，改成自動找到的替代模型
-let activeModel = MODEL_NAME;
+/** 使用者可以選的轉錄模型，用來比較哪個比較準；第一個是預設 */
+export const MODEL_CHOICES = [
+  { id: MODEL_NAME, label: 'Gemini 3 Flash（預覽版，目前預設）' },
+  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash（穩定版）' },
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash（最新穩定版）' },
+] as const;
+
+// 使用者選的模型，以及目前實際使用的模型：選的模型停用（例如預覽版下架）時，改成自動找到的替代模型
+let preferredModel: string = MODEL_NAME;
+let activeModel: string = MODEL_NAME;
 let fallbackLookup: { from: string; result: Promise<string | null> } | null = null;
 
 export const getActiveModel = () => activeModel;
+export const getPreferredModel = () => preferredModel;
 
-/** 回到預設模型（換 API Key 時、測試用） */
+/** 改用另一個模型（只接受 MODEL_CHOICES 裡的；其他的當作預設） */
+export const setPreferredModel = (model: string) => {
+  preferredModel = MODEL_CHOICES.some(c => c.id === model) ? model : MODEL_NAME;
+  activeModel = preferredModel;
+  fallbackLookup = null;
+};
+
+/** 回到選的模型（換 API Key 時：可用的模型可能不同，重新從選的模型開始） */
 export const resetModelSelection = () => {
-  activeModel = MODEL_NAME;
+  activeModel = preferredModel;
   fallbackLookup = null;
 };
 

@@ -12,7 +12,7 @@ vi.mock('@google/genai', () => ({
 
 const {
   transcribeChunk, requestLog, getActiveModel, resetModelSelection, pickFallbackModel, thinkingConfigFor, validateApiKey, MODEL_NAME,
-  buildTranscriptionPrompt, cleanSpeakerHints, OTHER_SPEAKER,
+  buildTranscriptionPrompt, cleanSpeakerHints, OTHER_SPEAKER, MODEL_CHOICES, setPreferredModel, getPreferredModel,
 } = await import('../../services/geminiService');
 const { parseGeminiError, ErrorType } = await import('../../utils/errorHandling');
 
@@ -23,6 +23,7 @@ const serverError = () => new Error('got status: 500. {"error":{"code":500,"mess
 beforeEach(() => {
   generateContent.mockReset();
   listModels.mockReset();
+  setPreferredModel(MODEL_NAME);
   resetModelSelection();
   requestLog.length = 0;
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -215,5 +216,29 @@ describe('講者名單', () => {
     await transcribeChunk(audio, 'key', 0, 0, { speakers: [{ name: '面試官', role: '提問的人' }] });
     const parts = generateContent.mock.calls[0][0].contents.parts;
     expect(parts[1].text).toContain('- 面試官：提問的人');
+  });
+});
+
+describe('選擇轉錄模型', () => {
+  it('選項第一個是預設；選了之後請求就用那個模型', async () => {
+    expect(MODEL_CHOICES[0].id).toBe(MODEL_NAME);
+    setPreferredModel('gemini-3.8-flash');
+    expect(getActiveModel()).toBe('gemini-3.8-flash');
+    generateContent.mockResolvedValue(reply([]));
+    await transcribeChunk(audio, 'key', 0, 0);
+    expect(generateContent.mock.calls[0][0].model).toBe('gemini-3.8-flash');
+    // 3.8 不支援 minimal 思考，要送 low
+    expect(generateContent.mock.calls[0][0].config.thinkingConfig).toEqual({ thinkingLevel: 'LOW' });
+  });
+
+  it('不在選項裡的模型當作預設', () => {
+    setPreferredModel('gemini-9-nonsense');
+    expect(getPreferredModel()).toBe(MODEL_NAME);
+  });
+
+  it('換 API Key 重設後回到「選的」模型，不是預設', () => {
+    setPreferredModel('gemini-3.6-flash');
+    resetModelSelection();
+    expect(getActiveModel()).toBe('gemini-3.6-flash');
   });
 });

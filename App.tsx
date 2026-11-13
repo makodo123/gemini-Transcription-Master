@@ -7,12 +7,13 @@ import UploadCard from './components/UploadCard';
 import StatusCard from './components/StatusCard';
 import TranscriptPanel from './components/TranscriptPanel';
 import { useTranscription } from './hooks/useTranscription';
-import { resetModelSelection, validateApiKey } from './services/geminiService';
+import { resetModelSelection, setPreferredModel, validateApiKey } from './services/geminiService';
 import { clearProgress, peekProgress } from './utils/progressStorage';
 import { loadSpeedHistory } from './utils/speedHistory';
 import { toPlainText, baseFileName, downloadText } from './utils/transcriptExport';
 import { saveLastTranscript, loadLastTranscript, clearLastTranscript } from './utils/transcriptStore';
 import { loadSpeakerHints, saveSpeakerHints } from './utils/speakerHints';
+import { loadModelChoice, saveModelChoice } from './utils/modelChoice';
 import { CHUNK_DURATION, MAX_CONCURRENCY } from './constants';
 
 const REPO_URL = 'https://github.com/makodo123/gemini-Transcription-Master';
@@ -46,6 +47,18 @@ function App() {
   const changeSpeakerHints = (hints: SpeakerHint[]) => {
     setSpeakerHints(hints);
     setHintsFromBefore(false);
+  };
+
+  // 轉錄用的模型，記在這台裝置上；放在 useState 初始值裡先設定，第一次轉錄前就生效
+  const [model, setModel] = useState(() => {
+    const saved = loadModelChoice();
+    setPreferredModel(saved);
+    return saved;
+  });
+  const changeModel = (next: string) => {
+    setPreferredModel(next);
+    saveModelChoice(next);
+    setModel(next);
   };
 
   const transcription = useTranscription(file, apiKey, speakerHints);
@@ -284,6 +297,8 @@ function App() {
             onSpeakerHintsChange={changeSpeakerHints}
             speakerHintsFromBefore={hintsFromBefore}
             speakerHintsApplyNextTime={transcripts.length > 0}
+            model={model}
+            onModelChange={changeModel}
             onSelectFile={selectFile}
             onDiscardPending={discardPendingProgress}
             onStart={handleStart}

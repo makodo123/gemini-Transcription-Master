@@ -11,7 +11,7 @@ test('預設模型停用時自動改用替代模型，轉錄照常完成', async
   expect(await transcriptTexts(page)).toEqual(['第0段', '第1段', '第2段']);
   expect(gemini.models.filter(m => m !== 'gemini-3-flash-preview').every(m => m === 'gemini-3-flash')).toBe(true);
   await page.getByText('詳細資訊').click();
-  await expect(page.getByText(/模型：gemini-3-flash（預設的 gemini-3-flash-preview 已無法使用，自動改用）/)).toBeVisible();
+  await expect(page.getByText(/模型：gemini-3-flash（您選的 gemini-3-flash-preview 已無法使用，自動改用）/)).toBeVisible();
 });
 
 test('找不到替代模型時整輪暫停，說明網站需要更新', async ({ page, openApp, gemini }) => {

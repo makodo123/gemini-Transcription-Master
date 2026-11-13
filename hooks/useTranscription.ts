@@ -1,7 +1,7 @@
 import { useState, useRef, useMemo, useCallback } from 'react';
 import { decodeAudio, getChunkCount, pcmChunkToWav, chunkWindow, formatTime, TRANSCRIBE_SAMPLE_RATE } from '../utils/audioUtils';
 import { keepOwnedSegments, removeBoundaryDuplicates } from '../utils/chunkBoundary';
-import { transcribeChunk, MODEL_NAME, getActiveModel, requestLog, cleanSpeakerHints } from '../services/geminiService';
+import { transcribeChunk, getPreferredModel, getActiveModel, requestLog, cleanSpeakerHints } from '../services/geminiService';
 import { AppStatus, TranscriptSegment, ProcessingStats, SpeakerHint } from '../types';
 import { SpeakerChange, swapSpeakersInChunk, applySpeakerChanges, revertSpeakerChanges } from '../utils/speakerSwap';
 import { saveProgress, loadProgress, clearProgress } from '../utils/progressStorage';
@@ -39,9 +39,9 @@ const buildPerfReport = (totalMs: number, decodeMs: number, minConcurrency: numb
   console.table(requestLog);
   const summary = `這次轉錄了 ${chunkCount} 段（每段 ${CHUNK_DURATION / 60} 分鐘），共花 ${secs(totalMs)} 秒`;
   const details = [
-    getActiveModel() === MODEL_NAME
-      ? `模型：${MODEL_NAME}`
-      : `模型：${getActiveModel()}（預設的 ${MODEL_NAME} 已無法使用，自動改用）`,
+    getActiveModel() === getPreferredModel()
+      ? `模型：${getActiveModel()}`
+      : `模型：${getActiveModel()}（您選的 ${getPreferredModel()} 已無法使用，自動改用）`,
     `總耗時 ${secs(totalMs)} 秒（讀取音檔 ${secs(decodeMs)} 秒）`,
     `API 請求 ${requestLog.length} 次：成功 ${ok.length}、失敗 ${failed.length}（其中請求次數過多 ${rateLimited.length} 次）`,
     times.length ? `單段請求耗時：平均 ${secs(avg)} 秒，最短 ${secs(Math.min(...times))} 秒，最長 ${secs(Math.max(...times))} 秒` : '',
