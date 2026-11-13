@@ -6,7 +6,7 @@ const generateContent = vi.fn();
 const listModels = vi.fn();
 vi.mock('@google/genai', () => ({
   GoogleGenAI: class { models = { generateContent, list: listModels }; },
-  ThinkingLevel: { MINIMAL: 'MINIMAL' },
+  ThinkingLevel: { MINIMAL: 'MINIMAL', LOW: 'LOW' },
   Type: { ARRAY: 'ARRAY', OBJECT: 'OBJECT', STRING: 'STRING' },
 }));
 
@@ -115,7 +115,10 @@ const notFound = (model: string) =>
 describe('模型停用時的備援', () => {
   it('思考設定依模型世代：3 以後用 thinkingLevel，2.5 用 thinkingBudget', () => {
     expect(thinkingConfigFor('gemini-3-flash-preview')).toEqual({ thinkingLevel: 'MINIMAL' });
-    expect(thinkingConfigFor('gemini-4-flash')).toEqual({ thinkingLevel: 'MINIMAL' });
+    expect(thinkingConfigFor('gemini-3.6-flash')).toEqual({ thinkingLevel: 'MINIMAL' });
+    // 3.8 起不支援 minimal，送了會失敗
+    expect(thinkingConfigFor('gemini-3.8-flash')).toEqual({ thinkingLevel: 'LOW' });
+    expect(thinkingConfigFor('gemini-4-flash')).toEqual({ thinkingLevel: 'LOW' });
     expect(thinkingConfigFor('gemini-2.5-flash')).toEqual({ thinkingBudget: 0 });
   });
 
@@ -125,6 +128,7 @@ describe('模型停用時的備援', () => {
       'gemini-2.5-flash', 'gemini-3-flash', 'gemini-4-flash-preview', 'gemini-3-flash-lite', 'gemini-3-flash-image', 'gemini-3-pro',
     ]), MODEL_NAME)).toBe('gemini-3-flash');
     expect(pickFallbackModel(models(['gemini-2.5-flash', 'gemini-4-flash-preview']), 'gemini-2.5-flash')).toBe('gemini-4-flash-preview');
+    expect(pickFallbackModel(models(['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.5-flash-lite']), MODEL_NAME)).toBe('gemini-3.8-flash');
     expect(pickFallbackModel(models(['gemini-2.0-flash', 'gemini-3-flash-lite']), MODEL_NAME)).toBeNull();
     expect(pickFallbackModel([{ name: 'models/gemini-3-flash', supportedActions: ['embedContent'] }], MODEL_NAME)).toBeNull();
   });

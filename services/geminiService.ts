@@ -19,9 +19,15 @@ export const resetModelSelection = () => {
 
 const modelVersion = (model: string) => Number(model.match(/gemini-(\d+(?:\.\d+)?)/)?.[1] ?? 0);
 
-/** 各世代的「最少思考」設定：3 以後用 thinkingLevel，2.5 用 thinkingBudget */
-export const thinkingConfigFor = (model: string): ThinkingConfig =>
-  modelVersion(model) >= 3 ? { thinkingLevel: ThinkingLevel.MINIMAL } : { thinkingBudget: 0 };
+/**
+ * 各世代的「最少思考」設定：2.5 用 thinkingBudget，3 以後用 thinkingLevel。
+ * 3.8 起不再支援 minimal（送了會回錯誤），最低只到 low。
+ */
+export const thinkingConfigFor = (model: string): ThinkingConfig => {
+  const version = modelVersion(model);
+  if (version >= 3.8) return { thinkingLevel: ThinkingLevel.LOW };
+  return version >= 3 ? { thinkingLevel: ThinkingLevel.MINIMAL } : { thinkingBudget: 0 };
+};
 
 export interface ModelInfo { name?: string; supportedActions?: string[] }
 
