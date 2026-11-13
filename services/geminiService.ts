@@ -27,6 +27,20 @@ export const setPreferredModel = (model: string) => {
   fallbackLookup = null;
 };
 
+// 某個模型因為安全規則等原因擋下一段音訊時，改用哪個模型再試一次（同一段音訊在同一個模型上重送結果一樣）
+const BLOCKED_FALLBACK: Record<string, string> = {
+  'gemini-3.8-flash': 'gemini-3.6-flash',
+  'gemini-3.6-flash': MODEL_NAME,
+  [MODEL_NAME]: 'gemini-3.6-flash',
+};
+
+/** 回覆是空的，而且是被擋下（不是伺服器錯誤或網路問題） */
+const isBlockedReply = (response: { text?: string; promptFeedback?: { blockReason?: unknown }; candidates?: { finishReason?: unknown }[] }) =>
+  !response.text && (
+    !!response.promptFeedback?.blockReason ||
+    ['SAFETY', 'RECITATION', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII'].includes(String(response.candidates?.[0]?.finishReason))
+  );
+
 /** 回到選的模型（換 API Key 時：可用的模型可能不同，重新從選的模型開始） */
 export const resetModelSelection = () => {
   activeModel = preferredModel;
@@ -184,6 +198,8 @@ export interface RequestLogEntry {
   outputTokens?: number;
   thinkingTokens?: number;
   model?: string;
+  /** 原本選的模型擋下了這一段，改用 model 轉錄成功 */
+  blockedModel?: string;
   error?: string;
 }
 
@@ -290,6 +306,27 @@ export const transcribeChunk = async (
       response = await generate(model);
     }
 
+    // 選的模型擋下這一段：改用另一個模型再試一次，而不是讓這一段失敗。另一個也不行就照原本的原因回報
+    let blockedNote = '';
+    const alternative = BLOCKED_FALLBACK[model];
+    if (isBlockedReply(response) && alternative && alternative !== model) {
+      const blockedModel = model;
+      const blocked = response;
+      try {
+        response = await generate(alternative);
+        if (!isBlockedReply(response)) {
+          log.blockedModel = blockedModel;
+          model = alternative;
+          log.model = model;
+        } else {
+          blockedNote = ` [fallback ${alternative}: finishReason=${response.candidates?.[0]?.finishReason ?? 'none'}, blockReason=${response.promptFeedback?.blockReason ?? 'none'}]`;
+          response = blocked;
+        }
+      } catch {
+        response = blocked;
+      }
+    }
+
     const responseText = response.text;
     log.ms = Math.round(performance.now() - log.startedAt);
     log.outputChars = responseText?.length ?? 0;
@@ -298,7 +335,7 @@ export const transcribeChunk = async (
     // 回覆空白或不是 JSON 時，把模型給的原因（被擋下、太長被截斷等）記在錯誤訊息裡，方便判斷與顯示
     const finishReason = response.candidates?.[0]?.finishReason;
     const blockReason = response.promptFeedback?.blockReason;
-    const diagnostics = `(model=${model}, finishReason=${finishReason ?? 'none'}, blockReason=${blockReason ?? 'none'}, chars=${responseText?.length ?? 0})`;
+    const diagnostics = `(model=${model}, finishReason=${finishReason ?? 'none'}, blockReason=${blockReason ?? 'none'}, chars=${responseText?.length ?? 0})${blockedNote}`;
     if (!responseText) {
       throw new Error(`No response from Gemini ${diagnostics}`);
     }

@@ -78,6 +78,8 @@ export class GeminiMock {
   listError: { error: { code: number; message: string; status: string } } | null = null;
   /** 這些模型會回 404（模擬已停用） */
   retired: string[] = [];
+  /** 這些模型會把音訊擋下（沒有內容，blockReason=OTHER） */
+  blocked: string[] = [];
   /** 每段送出的音訊長度（秒） */
   readonly audioSeconds: Record<number, number> = {};
   /** false：handler 回傳的時間已是「從送出的音訊開頭算」，不再補上重疊秒數 */
@@ -126,6 +128,9 @@ export const test = base.extend<{ gemini: GeminiMock; dialogs: Dialogs; openApp:
         if (mock.retired.includes(model)) {
           const error = { error: { code: 404, message: `models/${model} is not found for API version v1beta, or is not supported for generateContent.`, status: 'NOT_FOUND' } };
           return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify(error) });
+        }
+        if (mock.blocked.includes(model)) {
+          return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ promptFeedback: { blockReason: 'OTHER' } }) });
         }
         const body = JSON.parse(route.request().postData() ?? '{}');
         const audio = body.contents[0].parts[0].inlineData.data;

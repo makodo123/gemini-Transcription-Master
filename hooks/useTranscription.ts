@@ -46,6 +46,9 @@ const buildPerfReport = (totalMs: number, decodeMs: number, minConcurrency: numb
     `API 請求 ${requestLog.length} 次：成功 ${ok.length}、失敗 ${failed.length}（其中請求次數過多 ${rateLimited.length} 次）`,
     times.length ? `單段請求耗時：平均 ${secs(avg)} 秒，最短 ${secs(Math.min(...times))} 秒，最長 ${secs(Math.max(...times))} 秒` : '',
     ok.length ? `每段 ${CHUNK_DURATION / 60} 分鐘、上傳約 ${ok[0].uploadMB} MB` : '',
+    ok.some(r => r.blockedModel)
+      ? `有 ${ok.filter(r => r.blockedModel).length} 段被 ${ok.find(r => r.blockedModel)!.blockedModel} 擋下，自動改用 ${ok.find(r => r.blockedModel)!.model} 轉錄（第 ${ok.filter(r => r.blockedModel).map(r => r.chunk).join('、')} 段）`
+      : '',
     ok.some(r => r.outputTokens !== undefined)
       ? `每段平均輸出 ${Math.round(ok.reduce((a, r) => a + (r.outputTokens || 0), 0) / ok.length)} tokens、思考 ${Math.round(ok.reduce((a, r) => a + (r.thinkingTokens || 0), 0) / ok.length)} tokens`
       : '',

@@ -247,7 +247,7 @@ describe('沒有回傳內容時記下原因', () => {
   it('回覆空白：錯誤訊息帶著模型與結束原因', async () => {
     generateContent.mockResolvedValue({ text: '', candidates: [{ finishReason: 'SAFETY' }], usageMetadata: {} });
     await expect(transcribeChunk(audio, 'key', 0, 0, { maxRetries: 3, retryDelay: 1 })).rejects.toThrow(/No response from Gemini \(model=gemini-3-flash-preview, finishReason=SAFETY/);
-    expect(generateContent).toHaveBeenCalledTimes(1); // 被安全規則擋下，不重試
+    expect(generateContent).toHaveBeenCalledTimes(2); // 被擋下：改用另一個模型試一次（都不行就不再重試）
   });
 
   it('JSON 被截斷：訊息帶著 MAX_TOKENS，並且會重試', async () => {
@@ -259,5 +259,45 @@ describe('沒有回傳內容時記下原因', () => {
   it('回傳的不是陣列也當作無效', async () => {
     generateContent.mockResolvedValue({ text: '{"error":"x"}', candidates: [{ finishReason: 'STOP' }], usageMetadata: {} });
     await expect(transcribeChunk(audio, 'key', 0, 0, { maxRetries: 0 })).rejects.toThrow(/invalid JSON/);
+  });
+});
+
+describe('被擋下的段落改用另一個模型', () => {
+  const blocked = { text: undefined, promptFeedback: { blockReason: 'OTHER' }, usageMetadata: {} };
+  const ok = reply([{ speaker: 'A', timestamp: '00:01', text: '好' }]);
+
+  it('3.8 擋下就改用 3.6，成功就當作這一段的結果，並記下是哪個模型擋的', async () => {
+    setPreferredModel('gemini-3.8-flash');
+    generateContent.mockImplementation(({ model }: { model: string }) => Promise.resolve(model === 'gemini-3.8-flash' ? blocked : ok));
+    const segments = await transcribeChunk(audio, 'key', 0, 0, { maxRetries: 3, retryDelay: 1 });
+    expect(segments.map(s => s.text)).toEqual(['好']);
+    expect(generateContent.mock.calls.map(c => c[0].model)).toEqual(['gemini-3.8-flash', 'gemini-3.6-flash']);
+    // 換的模型用自己的思考設定（3.6 可以用 minimal）
+    expect(generateContent.mock.calls[1][0].config.thinkingConfig).toEqual({ thinkingLevel: 'MINIMAL' });
+    expect(requestLog.at(-1)).toMatchObject({ ok: true, model: 'gemini-3.6-flash', blockedModel: 'gemini-3.8-flash' });
+    // 只有這一段改用，選的模型不變
+    expect(getActiveModel()).toBe('gemini-3.8-flash');
+  });
+
+  it('兩個模型都擋下：照原本的原因回報，附上另一個模型的結果，不再重試', async () => {
+    setPreferredModel('gemini-3.8-flash');
+    generateContent.mockResolvedValue(blocked);
+    await expect(transcribeChunk(audio, 'key', 0, 0, { maxRetries: 3, retryDelay: 1 }))
+      .rejects.toThrow(/model=gemini-3\.8-flash, finishReason=none, blockReason=OTHER.*fallback gemini-3\.6-flash/);
+    expect(generateContent).toHaveBeenCalledTimes(2);
+  });
+
+  it('另一個模型出錯（例如額度用完）：照原本被擋下的原因回報', async () => {
+    setPreferredModel('gemini-3.8-flash');
+    generateContent.mockImplementation(({ model }: { model: string }) =>
+      model === 'gemini-3.8-flash' ? Promise.resolve(blocked) : Promise.reject(new Error('503 UNAVAILABLE')));
+    await expect(transcribeChunk(audio, 'key', 0, 0, { maxRetries: 0 })).rejects.toThrow(/No response from Gemini \(model=gemini-3\.8-flash/);
+  });
+
+  it('不是被擋下（伺服器錯誤、空陣列）就不換模型', async () => {
+    setPreferredModel('gemini-3.8-flash');
+    generateContent.mockResolvedValue(reply([]));
+    await transcribeChunk(audio, 'key', 0, 0, { maxRetries: 0 });
+    expect(generateContent).toHaveBeenCalledTimes(1);
   });
 });
