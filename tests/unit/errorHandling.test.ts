@@ -33,8 +33,9 @@ describe('parseGeminiError', () => {
     [apiError(500, 'Internal error encountered.', 'INTERNAL'), 'Gemini 伺服器暫時忙碌或發生問題'],
     [apiError(503, 'The model is overloaded.', 'UNAVAILABLE'), 'Gemini 伺服器暫時忙碌或發生問題'],
     [apiError(504, 'Deadline exceeded', 'DEADLINE_EXCEEDED'), 'Gemini 回應逾時'],
-    [new Error('No response from Gemini'), 'Gemini 沒有回傳可用的逐字稿內容'],
-    [new Error('Gemini returned invalid JSON'), 'Gemini 沒有回傳可用的逐字稿內容'],
+    [new Error('No response from Gemini'), 'Gemini 沒有回傳可用的逐字稿內容。可以改選其他轉錄模型後按「重試」'],
+    [new Error('Gemini returned invalid JSON (model=x, finishReason=STOP, blockReason=none, chars=10)'), 'Gemini 沒有回傳可用的逐字稿內容。可以改選其他轉錄模型後按「重試」（x，結束原因 STOP）'],
+    [new Error('Gemini returned invalid JSON (model=x, finishReason=MAX_TOKENS, blockReason=none, chars=65000)'), 'Gemini 的回覆太長被截斷（常見於長時間重複的聲音或雜音）。可以改選其他轉錄模型後按「重試」（x，結束原因 MAX_TOKENS）'],
   ])('伺服器端錯誤顯示白話說明：%s', (error, message) => {
     const e = parseGeminiError(error);
     expect(e.userMessage).toBe(message);
@@ -73,5 +74,18 @@ describe('parseAudioError', () => {
     const e = parseAudioError(new Error('Unable to decode audio data'));
     expect(e.type).toBe(ErrorType.AUDIO_DECODE_ERROR);
     expect(e.userMessage).toContain('建議改用 MP3、M4A 或 WAV');
+  });
+});
+
+describe('Gemini 沒有回傳內容的原因', () => {
+  it.each([
+    ['finishReason=SAFETY', '內容安全規則'],
+    ['blockReason=PROHIBITED_CONTENT', '內容安全規則'],
+    ['finishReason=RECITATION', '版權保護'],
+  ])('%s：說明原因，而且不重試（重送結果一樣）', (reason, text) => {
+    const e = parseGeminiError(new Error(`No response from Gemini (model=x, ${reason}, chars=0)`));
+    expect(e.userMessage).toContain(text);
+    expect(e.userMessage).toContain('改選其他轉錄模型');
+    expect(e.retryable).toBe(false);
   });
 });

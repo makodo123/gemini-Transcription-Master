@@ -295,16 +295,23 @@ export const transcribeChunk = async (
     log.outputChars = responseText?.length ?? 0;
     log.outputTokens = response.usageMetadata?.candidatesTokenCount;
     log.thinkingTokens = response.usageMetadata?.thoughtsTokenCount ?? 0;
+    // 回覆空白或不是 JSON 時，把模型給的原因（被擋下、太長被截斷等）記在錯誤訊息裡，方便判斷與顯示
+    const finishReason = response.candidates?.[0]?.finishReason;
+    const blockReason = response.promptFeedback?.blockReason;
+    const diagnostics = `(model=${model}, finishReason=${finishReason ?? 'none'}, blockReason=${blockReason ?? 'none'}, chars=${responseText?.length ?? 0})`;
     if (!responseText) {
-      throw new Error("No response from Gemini");
+      throw new Error(`No response from Gemini ${diagnostics}`);
     }
 
     let parsed: GeminiResponseItem[] = [];
     try {
       parsed = JSON.parse(responseText);
     } catch (e) {
-      console.error("Failed to parse Gemini JSON", e);
-      throw new Error("Gemini returned invalid JSON");
+      console.error("Failed to parse Gemini JSON", diagnostics, e, responseText.slice(-200));
+      throw new Error(`Gemini returned invalid JSON ${diagnostics}`);
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error(`Gemini returned invalid JSON ${diagnostics}`);
     }
 
     log.ok = true;

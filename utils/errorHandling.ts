@@ -93,7 +93,20 @@ export const parseGeminiError = (error: any): AppError => {
   }
 
   if (/No response from Gemini|invalid JSON/i.test(errorMessage)) {
-    return new AppError(ErrorType.API_ERROR, errorMessage, 'Gemini 沒有回傳可用的逐字稿內容', true);
+    // 附上模型與結束原因，使用者回報問題時才知道發生了什麼
+    const found = errorMessage.match(/model=([^,)\s]+), finishReason=([^,)\s]+)/);
+    const detail = found ? `（${found[1]}，結束原因 ${found[2]}）` : '';
+    // 被安全規則或版權偵測擋下時，同一段音訊重送也是一樣的結果，不重試
+    if (/finishReason=(SAFETY|PROHIBITED_CONTENT|BLOCKLIST|SPII)|blockReason=(SAFETY|PROHIBITED_CONTENT|BLOCKLIST|OTHER)/i.test(errorMessage)) {
+      return new AppError(ErrorType.API_ERROR, errorMessage, 'Gemini 因內容安全規則沒有回傳逐字稿。可以改選其他轉錄模型後按「重試」' + detail, false);
+    }
+    if (/finishReason=RECITATION/i.test(errorMessage)) {
+      return new AppError(ErrorType.API_ERROR, errorMessage, 'Gemini 認為這段聲音可能是受版權保護的內容（例如音樂）而沒有回傳逐字稿。可以改選其他轉錄模型後按「重試」' + detail, false);
+    }
+    if (/finishReason=MAX_TOKENS/i.test(errorMessage)) {
+      return new AppError(ErrorType.API_ERROR, errorMessage, 'Gemini 的回覆太長被截斷（常見於長時間重複的聲音或雜音）。可以改選其他轉錄模型後按「重試」' + detail, true);
+    }
+    return new AppError(ErrorType.API_ERROR, errorMessage, 'Gemini 沒有回傳可用的逐字稿內容。可以改選其他轉錄模型後按「重試」' + detail, true);
   }
 
   // 默認為 API 錯誤，只附上錯誤代碼

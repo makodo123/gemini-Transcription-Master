@@ -242,3 +242,22 @@ describe('選擇轉錄模型', () => {
     expect(getActiveModel()).toBe('gemini-3.6-flash');
   });
 });
+
+describe('沒有回傳內容時記下原因', () => {
+  it('回覆空白：錯誤訊息帶著模型與結束原因', async () => {
+    generateContent.mockResolvedValue({ text: '', candidates: [{ finishReason: 'SAFETY' }], usageMetadata: {} });
+    await expect(transcribeChunk(audio, 'key', 0, 0, { maxRetries: 3, retryDelay: 1 })).rejects.toThrow(/No response from Gemini \(model=gemini-3-flash-preview, finishReason=SAFETY/);
+    expect(generateContent).toHaveBeenCalledTimes(1); // 被安全規則擋下，不重試
+  });
+
+  it('JSON 被截斷：訊息帶著 MAX_TOKENS，並且會重試', async () => {
+    generateContent.mockResolvedValue({ text: '[{"speaker":"A","timest', candidates: [{ finishReason: 'MAX_TOKENS' }], usageMetadata: {} });
+    await expect(transcribeChunk(audio, 'key', 0, 0, { maxRetries: 2, retryDelay: 1 })).rejects.toThrow(/invalid JSON .*finishReason=MAX_TOKENS/);
+    expect(generateContent).toHaveBeenCalledTimes(3);
+  });
+
+  it('回傳的不是陣列也當作無效', async () => {
+    generateContent.mockResolvedValue({ text: '{"error":"x"}', candidates: [{ finishReason: 'STOP' }], usageMetadata: {} });
+    await expect(transcribeChunk(audio, 'key', 0, 0, { maxRetries: 0 })).rejects.toThrow(/invalid JSON/);
+  });
+});
