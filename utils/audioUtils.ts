@@ -130,7 +130,10 @@ export const blobToBase64 = (blob: Blob): Promise<string> => {
 };
 
 // 有些系統不會給音檔正確的 MIME 類型（例如 .opus、.m4a 常是空白），用副檔名補判斷
-const MEDIA_EXTENSIONS = ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg', 'oga', 'opus', 'webm', 'weba', 'mp4', 'm4v', 'mov', 'amr', '3gp', 'wma', 'aif', 'aiff', 'caf'];
+export const MEDIA_EXTENSIONS = ['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg', 'oga', 'opus', 'webm', 'weba', 'mp4', 'm4v', 'mov', 'amr', '3gp', 'wma', 'aif', 'aiff', 'caf'];
+
+/** 選檔視窗的 accept：除了 audio/*、video/*，也列出副檔名；有些系統給 .aac 等檔案的類型不是 audio/*，只靠類型會選不到 */
+export const FILE_PICKER_ACCEPT = ['audio/*', 'video/*', ...MEDIA_EXTENSIONS.map(e => `.${e}`)].join(',');
 
 /** 是否為音訊或影片檔；其他檔案（文件、圖片等）選了也無法轉錄 */
 export const isMediaFile = (file: File): boolean => {

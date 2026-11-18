@@ -3,7 +3,7 @@ import { Upload, FileAudio, Play, StopCircle, RefreshCw, Info, History, AlertCir
 import { AppStatus, SpeakerHint } from '../types';
 import SpeakerHintsEditor from './SpeakerHintsEditor';
 import ModelSelect from './ModelSelect';
-import { formatTime } from '../utils/audioUtils';
+import { formatTime, FILE_PICKER_ACCEPT } from '../utils/audioUtils';
 import { CHUNK_DURATION } from '../constants';
 
 interface PendingProgress {
@@ -127,7 +127,7 @@ const UploadCard: React.FC<UploadCardProps> = ({
            type="file"
            ref={fileInputRef}
            onChange={handleFileChange}
-           accept="audio/*,video/*"
+           accept={FILE_PICKER_ACCEPT}
            disabled={isBusy}
            className="hidden"
          />

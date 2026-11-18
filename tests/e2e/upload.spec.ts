@@ -72,3 +72,12 @@ test.describe('選擇音檔', () => {
     expect(gemini.requests.sort()).toEqual([0, 1]);
   });
 });
+
+test('選檔視窗列出副檔名；沒有檔案類型的 .aac 也能選', async ({ page, openApp }) => {
+  await openApp();
+  await expect(page.locator('input[type=file]')).toHaveAttribute('accept', /audio\/\*,video\/\*.*\.m4a.*\.aac/);
+  // 部分系統不給檔案類型（空白）；依副檔名辨識
+  await page.setInputFiles('input[type=file]', { name: '錄音.aac', mimeType: '', buffer: Buffer.from([0xff, 0xf1, 0x50, 0x40, 0x23, 0xff, 0xfc, 0xde]) });
+  await expect(page.getByText('錄音.aac')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
