@@ -49,7 +49,8 @@ test.describe('API Key 驗證', () => {
 test.describe('選檔格式', () => {
   test('選檔視窗可以選影片檔', async ({ page, openApp }) => {
     await openApp();
-    expect(await page.locator('input[type=file]').getAttribute('accept')).toBe('audio/*,video/*');
+    const accept = await page.locator('input[type=file]').getAttribute('accept');
+    expect(accept?.split(',')).toEqual(expect.arrayContaining(['audio/*', 'video/*', '.mp4', '.mov', '.aac', '.m4a', '.mp3', '.wav']));
   });
 
   test('影片檔（MP4/MOV）可以轉錄', async ({ page, openApp, gemini }) => {
