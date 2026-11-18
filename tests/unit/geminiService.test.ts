@@ -237,16 +237,16 @@ describe('選擇轉錄模型', () => {
   });
 
   it('換 API Key 重設後回到「選的」模型，不是預設', () => {
-    setPreferredModel('gemini-3.6-flash');
+    setPreferredModel('gemini-3.8-flash');
     resetModelSelection();
-    expect(getActiveModel()).toBe('gemini-3.6-flash');
+    expect(getActiveModel()).toBe('gemini-3.8-flash');
   });
 });
 
 describe('沒有回傳內容時記下原因', () => {
   it('回覆空白：錯誤訊息帶著模型與結束原因', async () => {
     generateContent.mockResolvedValue({ text: '', candidates: [{ finishReason: 'SAFETY' }], usageMetadata: {} });
-    await expect(transcribeChunk(audio, 'key', 0, 0, { maxRetries: 3, retryDelay: 1 })).rejects.toThrow(/No response from Gemini \(model=gemini-3-flash-preview, finishReason=SAFETY/);
+    await expect(transcribeChunk(audio, 'key', 0, 0, { maxRetries: 3, retryDelay: 1 })).rejects.toThrow(/No response from Gemini \(model=gemini-3.6-flash, finishReason=SAFETY/);
     expect(generateContent).toHaveBeenCalledTimes(2); // 被擋下：改用另一個模型試一次（都不行就不再重試）
   });
 

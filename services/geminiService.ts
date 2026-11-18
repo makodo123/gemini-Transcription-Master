@@ -3,13 +3,14 @@ import { TranscriptSegment, SpeakerHint } from "../types";
 import { blobToBase64, parseTimeStringToSeconds } from "../utils/audioUtils";
 import { isRateLimitError, isModelNotFoundError, parseGeminiError, ErrorType } from "../utils/errorHandling";
 
-export const MODEL_NAME = 'gemini-3-flash-preview';
+// 預設用 3.6 Flash：實測 3.8 會擋下部分音訊，預覽版的 3 Flash 則沒有下架日期但 Google 已建議改用 3.6
+export const MODEL_NAME = 'gemini-3.6-flash';
 
 /** 使用者可以選的轉錄模型，用來比較哪個比較準；第一個是預設 */
 export const MODEL_CHOICES = [
-  { id: MODEL_NAME, label: 'Gemini 3 Flash（預覽版，目前預設）' },
-  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash（穩定版）' },
-  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash（最新穩定版）' },
+  { id: MODEL_NAME, label: 'Gemini 3.6 Flash（穩定版，預設）' },
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash（最新穩定版，部分音訊會被擋下）' },
+  { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash（預覽版）' },
 ] as const;
 
 // 使用者選的模型，以及目前實際使用的模型：選的模型停用（例如預覽版下架）時，改成自動找到的替代模型
@@ -30,8 +31,8 @@ export const setPreferredModel = (model: string) => {
 // 某個模型因為安全規則等原因擋下一段音訊時，改用哪個模型再試一次（同一段音訊在同一個模型上重送結果一樣）
 const BLOCKED_FALLBACK: Record<string, string> = {
   'gemini-3.8-flash': 'gemini-3.6-flash',
-  'gemini-3.6-flash': MODEL_NAME,
-  [MODEL_NAME]: 'gemini-3.6-flash',
+  'gemini-3.6-flash': 'gemini-3-flash-preview',
+  'gemini-3-flash-preview': 'gemini-3.6-flash',
 };
 
 /** 回覆是空的，而且是被擋下（不是伺服器錯誤或網路問題） */

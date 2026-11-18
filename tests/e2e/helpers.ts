@@ -74,7 +74,7 @@ export class GeminiMock {
   /** 每次請求給模型的指示 */
   readonly prompts: string[] = [];
   /** 這組 API Key 列得出的模型；listError 設定時列模型會失敗 */
-  available = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
+  available = ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-2.5-flash'];
   listError: { error: { code: number; message: string; status: string } } | null = null;
   /** 這些模型會回 404（模擬已停用） */
   retired: string[] = [];

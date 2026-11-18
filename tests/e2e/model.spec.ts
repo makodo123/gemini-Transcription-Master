@@ -2,7 +2,7 @@ import { test, expect, transcribe } from './helpers';
 
 test('選轉錄模型：請求用選的模型，下次打開還記得', async ({ page, openApp, gemini, dialogs }) => {
   await openApp();
-  await expect(page.getByLabel('轉錄模型')).toHaveValue('gemini-3-flash-preview');
+  await expect(page.getByLabel('轉錄模型')).toHaveValue('gemini-3.6-flash');
   await page.getByLabel('轉錄模型').selectOption('gemini-3.8-flash');
   await transcribe(page);
   expect(gemini.models).toEqual(['gemini-3.8-flash', 'gemini-3.8-flash', 'gemini-3.8-flash']);

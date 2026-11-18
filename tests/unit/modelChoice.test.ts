@@ -13,7 +13,7 @@ describe('modelChoice', () => {
   });
 
   it('選回預設就不再保存；不在選項裡的值當作預設', () => {
-    saveModelChoice('gemini-3.6-flash');
+    saveModelChoice('gemini-3.8-flash');
     saveModelChoice(MODEL_NAME);
     expect(localStorage.getItem('transcription_model')).toBeNull();
     localStorage.setItem('transcription_model', 'gemini-old-retired');
